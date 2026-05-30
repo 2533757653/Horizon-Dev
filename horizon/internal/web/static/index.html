@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Horizon Trading System</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1419; color: #e7e9ea; min-height: 100vh; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: #1c1f23; border-radius: 12px; margin-bottom: 20px; }
+        header h1 { font-size: 20px; font-weight: 600; }
+        .status { display: flex; gap: 15px; align-items: center; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .status-dot.green { background: #00c853; }
+        .status-dot.red { background: #ff1744; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .card { background: #1c1f23; border-radius: 12px; padding: 20px; }
+        .card h2 { font-size: 14px; font-weight: 500; color: #8899a6; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .portfolio-table { width: 100%; border-collapse: collapse; }
+        .portfolio-table th, .portfolio-table td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #2f3336; }
+        .portfolio-table th { color: #8899a6; font-weight: 500; font-size: 12px; }
+        .ticker-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .ticker-card { background: #2f3336; border-radius: 8px; padding: 12px; }
+        .ticker-card .symbol { font-size: 12px; color: #8899a6; }
+        .ticker-card .price { font-size: 18px; font-weight: 600; margin-top: 4px; }
+        .ticker-card .volume { font-size: 11px; color: #8899a6; margin-top: 2px; }
+        .order-form { display: flex; flex-direction: column; gap: 10px; }
+        .order-form select, .order-form input { padding: 10px; border-radius: 8px; border: 1px solid #2f3336; background: #2f3336; color: #e7e9ea; font-size: 14px; }
+        .order-form button { padding: 12px; border-radius: 8px; border: none; background: #1d9bf0; color: white; font-weight: 600; cursor: pointer; }
+        .order-form button:hover { background: #1a8cd8; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #2f3336; }
+        th { color: #8899a6; font-weight: 500; font-size: 12px; }
+        .btn-cancel { padding: 6px 12px; border-radius: 6px; border: none; background: #ff1744; color: white; font-size: 12px; cursor: pointer; }
+        .btn-cancel:hover { background: #d50000; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Horizon Trading System</h1>
+            <div class="status">
+                <span><span class="status-dot green" id="connectionStatus"></span> Connected</span>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <h2>Portfolio</h2>
+                <table class="portfolio-table" id="portfolioTable">
+                    <thead><tr><th>Exchange</th><th>Asset</th><th>Free</th><th>Locked</th><th>USDT Value</th></tr></thead>
+                    <tbody id="portfolioBody"></tbody>
+                </table>
+                <div style="margin-top:15px;font-size:18px;font-weight:600;">Total: <span id="totalUSDT">$0.00</span></div>
+            </div>
+
+            <div class="card">
+                <h2>Market Data</h2>
+                <div class="ticker-grid" id="tickerGrid">
+                    <div class="ticker-card"><div class="symbol">BTCUSDT</div><div class="price" id="btcusdt-price">--</div><div class="volume">Vol: <span id="btcusdt-vol">--</span></div></div>
+                    <div class="ticker-card"><div class="symbol">ETHUSDT</div><div class="price" id="ethusdt-price">--</div><div class="volume">Vol: <span id="ethusdt-vol">--</span></div></div>
+                    <div class="ticker-card"><div class="symbol">SOLUSDT</div><div class="price" id="solusdt-price">--</div><div class="volume">Vol: <span id="solusdt-vol">--</span></div></div>
+                    <div class="ticker-card"><div class="symbol">BNBUSDT</div><div class="price" id="bnbusdt-price">--</div><div class="volume">Vol: <span id="bnbusdt-vol">--</span></div></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Order Ticket</h2>
+                <form class="order-form" id="orderForm">
+                    <select id="exchange"><option value="binance">Binance</option><option value="htx">HTX</option><option value="hyperliquid">Hyperliquid</option><option value="bitget">Bitget</option></select>
+                    <select id="symbol"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option><option value="BNBUSDT">BNBUSDT</option></select>
+                    <select id="side"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+                    <select id="orderType"><option value="market">Market</option><option value="limit">Limit</option></select>
+                    <input type="number" id="price" placeholder="Price (for limit orders)" step="0.01">
+                    <input type="number" id="volume" placeholder="Volume" step="0.0001" required>
+                    <button type="submit">Submit Order</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h2>Open Orders</h2>
+                <table id="openOrdersTable">
+                    <thead><tr><th>Exchange</th><th>Symbol</th><th>Side</th><th>Type</th><th>Price</th><th>Volume</th><th>Filled</th><th>Status</th><th>Action</th></tr></thead>
+                    <tbody id="openOrdersBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';
+        let eventSource = null;
+
+        async function loadPortfolio() {
+            try {
+                const res = await fetch(API_BASE + '/api/portfolio');
+                const data = await res.json();
+                const tbody = document.getElementById('portfolioBody');
+                tbody.innerHTML = '';
+                let total = 0;
+                for (const [exchange, balances] of Object.entries(data.exchanges || {})) {
+                    for (const bal of balances) {
+                        const row = document.createElement('tr');
+                        row.innerHTML = '<td>' + exchange + '</td><td>' + bal.asset + '</td><td>' + bal.free.toFixed(4) + '</td><td>' + bal.locked.toFixed(4) + '</td><td>$' + bal.usdt_value.toFixed(2) + '</td>';
+                        tbody.appendChild(row);
+                        total += bal.usdt_value;
+                    }
+                }
+                document.getElementById('totalUSDT').textContent = '$' + total.toFixed(2);
+            } catch (e) { console.error('portfolio error', e); }
+        }
+
+        async function loadMarketData(symbol) {
+            try {
+                const res = await fetch(API_BASE + '/api/marketdata/' + symbol);
+                const data = await res.json();
+                const tickers = data.tickers || [];
+                if (tickers.length > 0) {
+                    const t = tickers[0];
+                    const el = document.getElementById(symbol.toLowerCase() + '-price');
+                    const volEl = document.getElementById(symbol.toLowerCase() + '-vol');
+                    if (el) el.textContent = '$' + t.price.toFixed(2);
+                    if (volEl) volEl.textContent = '$' + (t.volume_24h / 1000000).toFixed(2) + 'M';
+                }
+            } catch (e) { console.error('market data error', e); }
+        }
+
+        async function loadOpenOrders() {
+            try {
+                const res = await fetch(API_BASE + '/api/orders/open');
+                const orders = await res.json();
+                const tbody = document.getElementById('openOrdersBody');
+                tbody.innerHTML = '';
+                for (const o of (orders || [])) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = '<td>' + o.exchange + '</td><td>' + o.symbol + '</td><td>' + o.side + '</td><td>' + o.order_type + '</td><td>' + (o.price || '-') + '</td><td>' + o.volume + '</td><td>' + o.filled_volume + '</td><td>' + o.status + '</td><td><button class="btn-cancel" onclick="cancelOrder(\'' + o.id + '\',\'' + o.exchange + '\')">Cancel</button></td>';
+                    tbody.appendChild(row);
+                }
+            } catch (e) { console.error('orders error', e); }
+        }
+
+        async function cancelOrder(orderID, exchange) {
+            try {
+                await fetch(API_BASE + '/api/orders/' + orderID + '?exchange=' + exchange, { method: 'DELETE' });
+                loadOpenOrders();
+            } catch (e) { console.error('cancel error', e); }
+        }
+
+        document.getElementById('orderForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const body = {
+                exchange: document.getElementById('exchange').value,
+                symbol: document.getElementById('symbol').value,
+                side: document.getElementById('side').value,
+                type: document.getElementById('orderType').value,
+                price: parseFloat(document.getElementById('price').value) || 0,
+                volume: parseFloat(document.getElementById('volume').value)
+            };
+            try {
+                const res = await fetch(API_BASE + '/api/orders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (res.ok) { loadOpenOrders(); alert('Order submitted'); }
+                else { alert('Order failed'); }
+            } catch (e) { alert('Error: ' + e); }
+        });
+
+        function connectSSE() {
+            if (eventSource) eventSource.close();
+            eventSource = new EventSource(API_BASE + '/api/marketdata/stream');
+            eventSource.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'ticker' && data.data) {
+                    const symbol = data.symbol.toLowerCase();
+                    const priceEl = document.getElementById(symbol + '-price');
+                    const volEl = document.getElementById(symbol + '-vol');
+                    if (priceEl) priceEl.textContent = '$' + data.data.price.toFixed(2);
+                    if (volEl) volEl.textContent = '$' + (data.data.volume_24h / 1000000).toFixed(2) + 'M';
+                }
+            };
+            eventSource.onerror = () => { document.getElementById('connectionStatus').className = 'status-dot red'; };
+            eventSource.onopen = () => { document.getElementById('connectionStatus').className = 'status-dot green'; };
+        }
+
+        loadPortfolio();
+        ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT'].forEach(loadMarketData);
+        loadOpenOrders();
+        setInterval(() => { loadPortfolio(); ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT'].forEach(loadMarketData); loadOpenOrders(); }, 10000);
+        connectSSE();
+    </script>
+</body>
+</html>
