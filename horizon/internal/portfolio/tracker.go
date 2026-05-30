@@ -34,6 +34,10 @@ func NewTracker(registry *exchange.Registry, db *sql.DB) *Tracker {
 	}
 }
 
+func (t *Tracker) SetFetcher(fetcher *marketdata.Fetcher) {
+	t.fetcher = fetcher
+}
+
 func (t *Tracker) Start(ctx context.Context) {
 	t.refreshBalances(ctx)
 

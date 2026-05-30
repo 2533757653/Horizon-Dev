@@ -1,5 +1,7 @@
 package exchange
 
+import "context"
+
 type Registry struct {
     adapters map[string]Adapter
 }
