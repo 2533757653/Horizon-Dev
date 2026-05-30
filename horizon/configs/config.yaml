@@ -1,0 +1,21 @@
+app:
+  host: "0.0.0.0"
+  port: 8080
+  log_level: "info"
+
+exchanges:
+  binance: { enabled: true, recv_window: 5000 }
+  htx: { enabled: true, recv_window: 5000 }
+  hyperliquid: { enabled: true }
+  bitget: { enabled: true }
+
+trading:
+  order_approval_timeout: 300
+  market_data_poll_interval: 10
+  strategy_poll_interval: 300
+
+llm:
+  enabled: false
+
+database:
+  path: "./data/horizon.db"
