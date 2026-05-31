@@ -17,6 +17,8 @@ from ..exchange.registry import ExchangeRegistry
 from ..marketdata.fetcher import MarketDataFetcher
 from ..ordermanager.manager import OrderManager, OrderSubmissionError
 from ..portfolio.tracker import PortfolioTracker
+from ..proposals import ProposalQueue
+from ..proposals.queue import InvalidProposalStateError, ProposalExpiredError, ProposalNotFoundError
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -31,6 +33,18 @@ class DecimalEncoder(json.JSONEncoder):
 def dumps_safe(obj: Any) -> str:
     """Serialize object to JSON string, handling Decimal conversion."""
     return json.dumps(obj, cls=DecimalEncoder)
+
+
+def format_timestamp(value: Any) -> Optional[str]:
+    """Format a timestamp value to ISO format string.
+
+    Handles both datetime objects and string representations from SQLite.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return value.isoformat()
 
 
 class CustomJSONResponse(JSONResponse):
@@ -54,6 +68,42 @@ class OrderRequestModel(BaseModel):
     volume: float = Field(..., description="Order volume")
 
 
+class ApproveRequestModel(BaseModel):
+    """Request model for proposal approval."""
+
+    approved_by: str = Field(..., description="Identifier of the approver")
+
+
+class RejectRequestModel(BaseModel):
+    """Request model for proposal rejection."""
+
+    rejected_by: str = Field(..., description="Identifier of the rejector")
+    reason: Optional[str] = Field(None, description="Rejection reason")
+
+
+class StrategyConfigUpdateModel(BaseModel):
+    """Request model for updating strategy configuration."""
+
+    min_confidence_threshold: int = Field(..., ge=0, le=100, description="Minimum confidence threshold (0-100)")
+    max_risk_tier: Literal["low", "medium", "high"] = Field(..., description="Maximum risk tier")
+    analysis_interval_hours: int = Field(..., ge=1, description="Analysis interval in hours")
+    asset_whitelist: list[str] = Field(..., description="List of asset symbols to trade")
+    max_position_pct: float = Field(..., gt=0, description="Maximum position size as percentage of portfolio")
+    max_daily_loss_pct: float = Field(..., ge=0, description="Maximum daily loss as percentage")
+    max_exchange_exposure_pct: float = Field(..., gt=0, description="Maximum exchange exposure as percentage")
+    cooldown_seconds: int = Field(..., ge=0, description="Cooldown period between trades in seconds")
+    order_min_notional: float = Field(..., gt=0, description="Minimum order notional value")
+    order_max_notional: float = Field(..., gt=0, description="Maximum order notional value")
+    price_drift_expiry_pct: float = Field(..., gt=0, description="Price drift threshold for proposal expiry")
+    system_prompt: str = Field(..., min_length=1, description="System prompt for LLM analysis")
+
+
+class StrategyModeModel(BaseModel):
+    """Request model for updating strategy mode."""
+
+    mode: Literal["paper", "live"] = Field(..., description="Trading mode")
+
+
 def create_app(
     settings: Settings,
     db: aiosqlite.Connection,
@@ -61,6 +111,7 @@ def create_app(
     fetcher: MarketDataFetcher,
     order_manager: OrderManager,
     portfolio_tracker: PortfolioTracker,
+    proposal_queue: ProposalQueue,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -71,6 +122,7 @@ def create_app(
         fetcher: Market data fetcher.
         order_manager: Order manager.
         portfolio_tracker: Portfolio tracker.
+        proposal_queue: Proposal queue for trade proposals.
 
     Returns:
         Configured FastAPI application instance.
@@ -97,6 +149,7 @@ def create_app(
     app.state.fetcher = fetcher
     app.state.order_manager = order_manager
     app.state.portfolio_tracker = portfolio_tracker
+    app.state.proposal_queue = proposal_queue
 
     # Health check endpoint
     @app.get("/api/health")
@@ -285,6 +338,344 @@ def create_app(
                         "updated_at_ms": 0,
                     }
             return CustomJSONResponse(content=[serialize_order(o) for o in orders])
+
+    # ---- Proposal Endpoints ----
+
+    @app.get("/api/proposals")
+    async def list_proposals(
+        status: Optional[str] = Query(
+            None,
+            description="Filter by status: proposed, approved, rejected, expired, executed",
+        ),
+        limit: int = Query(50, ge=1, le=200, description="Maximum number of proposals to return"),
+    ) -> JSONResponse:
+        """List proposals with optional status filter.
+
+        Args:
+            status: Optional status filter.
+            limit: Maximum number of proposals to return (max 200).
+
+        Returns:
+            Dictionary with proposals list and count.
+        """
+        # Convert status string to ProposalStatus enum
+        from ..proposals.models import ProposalStatus
+
+        status_filter = None
+        if status is not None:
+            try:
+                status_filter = ProposalStatus(status)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status: {status}. Must be one of: proposed, approved, rejected, expired, executed",
+                )
+
+        proposals = await proposal_queue.get_proposals(status=status_filter, limit=limit)
+        return CustomJSONResponse(content={
+            "proposals": [p.to_dict() for p in proposals],
+            "count": len(proposals),
+        })
+
+    @app.get("/api/proposals/stats")
+    async def get_proposal_stats() -> JSONResponse:
+        """Get proposal statistics by status.
+
+        Returns:
+            Dictionary with counts by status.
+        """
+        stats = await proposal_queue.get_stats()
+        return CustomJSONResponse(content=stats)
+
+    @app.get("/api/proposals/{proposal_id}")
+    async def get_proposal(proposal_id: str) -> JSONResponse:
+        """Get a single proposal by ID.
+
+        Args:
+            proposal_id: UUID of the proposal.
+
+        Returns:
+            Proposal dict.
+
+        Raises:
+            HTTP 404: If proposal not found.
+        """
+        proposal = await proposal_queue.get_proposal(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+        return CustomJSONResponse(content=proposal.to_dict())
+
+    @app.post("/api/proposals/{proposal_id}/approve")
+    async def approve_proposal(
+        proposal_id: str,
+        request: ApproveRequestModel,
+    ) -> JSONResponse:
+        """Approve a proposal and execute the corresponding order.
+
+        Args:
+            proposal_id: UUID of the proposal to approve.
+            request: Approval request with approved_by field.
+
+        Returns:
+            Updated proposal dict with status 'executed'.
+
+        Raises:
+            HTTP 400: If proposal not in proposed state.
+            HTTP 410: If proposal has expired.
+        """
+        try:
+            proposal = await proposal_queue.approve(proposal_id, request.approved_by)
+            return CustomJSONResponse(content=proposal.to_dict())
+        except ProposalNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+        except InvalidProposalStateError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except ProposalExpiredError as e:
+            raise HTTPException(status_code=410, detail=str(e))
+
+    @app.post("/api/proposals/{proposal_id}/reject")
+    async def reject_proposal(
+        proposal_id: str,
+        request: RejectRequestModel,
+    ) -> JSONResponse:
+        """Reject a proposal.
+
+        Args:
+            proposal_id: UUID of the proposal to reject.
+            request: Rejection request with rejected_by and optional reason.
+
+        Returns:
+            Updated proposal dict with status 'rejected'.
+
+        Raises:
+            HTTP 400: If proposal not in proposed state.
+        """
+        try:
+            proposal = await proposal_queue.reject(
+                proposal_id,
+                request.rejected_by,
+                request.reason or "",
+            )
+            return CustomJSONResponse(content=proposal.to_dict())
+        except ProposalNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+        except InvalidProposalStateError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.get("/api/llm/history")
+    async def get_llm_history(
+        limit: int = Query(50, ge=1, le=200, description="Maximum number of records to return"),
+    ) -> JSONResponse:
+        """Get LLM analysis history.
+
+        Args:
+            limit: Maximum number of records to return (max 200).
+
+        Returns:
+            Dictionary with history list.
+        """
+        cursor = await db.execute(
+            """
+            SELECT id, triggered_at, completion_status, latency_ms,
+                   token_count_input, token_count_output, parsed_proposals_count, error_message
+            FROM llm_analysis_history
+            ORDER BY triggered_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        history = [
+            {
+                "id": row["id"],
+                "triggered_at": format_timestamp(row["triggered_at"]),
+                "completion_status": row["completion_status"],
+                "latency_ms": row["latency_ms"],
+                "token_count_input": row["token_count_input"],
+                "token_count_output": row["token_count_output"],
+                "parsed_proposals_count": row["parsed_proposals_count"],
+                "error_message": row["error_message"],
+            }
+            for row in rows
+        ]
+        return CustomJSONResponse(content={"history": history})
+
+    # ---- Strategy Config Endpoints ----
+
+    @app.get("/api/strategy/config")
+    async def get_strategy_config() -> JSONResponse:
+        """Get the active strategy configuration.
+
+        Returns:
+            Active strategy config as JSON (excludes sensitive fields like autonomy_enabled).
+
+        Raises:
+            HTTP 404: If no active strategy config found.
+        """
+        cursor = await db.execute(
+            "SELECT * FROM strategy_configs WHERE enabled = 1 LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="No active strategy config found")
+
+        # Parse asset_whitelist from JSON string if needed
+        asset_whitelist = row["asset_whitelist"]
+        if isinstance(asset_whitelist, str):
+            import json
+            asset_whitelist = json.loads(asset_whitelist)
+
+        # Return config without sensitive fields (autonomy_enabled is NOT exposed)
+        return CustomJSONResponse(content={
+            "id": row["id"],
+            "name": row["name"],
+            "enabled": row["enabled"],
+            "mode": row["mode"],
+            "min_confidence_threshold": row["min_confidence_threshold"],
+            "max_risk_tier": row["max_risk_tier"],
+            "analysis_interval_hours": row["analysis_interval_hours"],
+            "asset_whitelist": asset_whitelist,
+            "max_position_pct": row["max_position_pct"],
+            "max_daily_loss_pct": row["max_daily_loss_pct"],
+            "max_exchange_exposure_pct": row["max_exchange_exposure_pct"],
+            "cooldown_seconds": row["cooldown_seconds"],
+            "order_min_notional": row["order_min_notional"],
+            "order_max_notional": row["order_max_notional"],
+            "price_drift_expiry_pct": row["price_drift_expiry_pct"],
+            "system_prompt": row["system_prompt"],
+            "created_at": format_timestamp(row["created_at"]),
+            "updated_at": format_timestamp(row["updated_at"]),
+        })
+
+    @app.put("/api/strategy/config")
+    async def update_strategy_config(config_data: StrategyConfigUpdateModel) -> JSONResponse:
+        """Update the active strategy configuration.
+
+        Args:
+            config_data: Updated configuration fields.
+
+        Returns:
+            Updated strategy config.
+
+        Raises:
+            HTTP 404: If no active strategy config found.
+        """
+        import json
+
+        # Get the active config ID
+        cursor = await db.execute(
+            "SELECT id FROM strategy_configs WHERE enabled = 1 LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="No active strategy config found")
+
+        config_id = row["id"]
+
+        # Convert asset_whitelist to JSON string for storage
+        asset_whitelist_json = json.dumps(config_data.asset_whitelist)
+
+        # Update the strategy config
+        await db.execute(
+            """
+            UPDATE strategy_configs SET
+                min_confidence_threshold = ?,
+                max_risk_tier = ?,
+                analysis_interval_hours = ?,
+                asset_whitelist = ?,
+                max_position_pct = ?,
+                max_daily_loss_pct = ?,
+                max_exchange_exposure_pct = ?,
+                cooldown_seconds = ?,
+                order_min_notional = ?,
+                order_max_notional = ?,
+                price_drift_expiry_pct = ?,
+                system_prompt = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                config_data.min_confidence_threshold,
+                config_data.max_risk_tier,
+                config_data.analysis_interval_hours,
+                asset_whitelist_json,
+                config_data.max_position_pct,
+                config_data.max_daily_loss_pct,
+                config_data.max_exchange_exposure_pct,
+                config_data.cooldown_seconds,
+                config_data.order_min_notional,
+                config_data.order_max_notional,
+                config_data.price_drift_expiry_pct,
+                config_data.system_prompt,
+                config_id,
+            ),
+        )
+        await db.commit()
+
+        # Fetch and return the updated config
+        cursor = await db.execute(
+            "SELECT * FROM strategy_configs WHERE id = ?",
+            (config_id,)
+        )
+        row = await cursor.fetchone()
+
+        # Parse asset_whitelist from JSON string if needed
+        asset_whitelist = row["asset_whitelist"]
+        if isinstance(asset_whitelist, str):
+            asset_whitelist = json.loads(asset_whitelist)
+
+        return CustomJSONResponse(content={
+            "id": row["id"],
+            "name": row["name"],
+            "enabled": row["enabled"],
+            "mode": row["mode"],
+            "min_confidence_threshold": row["min_confidence_threshold"],
+            "max_risk_tier": row["max_risk_tier"],
+            "analysis_interval_hours": row["analysis_interval_hours"],
+            "asset_whitelist": asset_whitelist,
+            "max_position_pct": row["max_position_pct"],
+            "max_daily_loss_pct": row["max_daily_loss_pct"],
+            "max_exchange_exposure_pct": row["max_exchange_exposure_pct"],
+            "cooldown_seconds": row["cooldown_seconds"],
+            "order_min_notional": row["order_min_notional"],
+            "order_max_notional": row["order_max_notional"],
+            "price_drift_expiry_pct": row["price_drift_expiry_pct"],
+            "system_prompt": row["system_prompt"],
+            "created_at": format_timestamp(row["created_at"]),
+            "updated_at": format_timestamp(row["updated_at"]),
+        })
+
+    @app.post("/api/strategy/mode")
+    async def update_strategy_mode(mode_data: StrategyModeModel) -> JSONResponse:
+        """Update the active strategy mode.
+
+        Args:
+            mode_data: New mode ('paper' or 'live').
+
+        Returns:
+            Updated mode.
+
+        Raises:
+            HTTP 404: If no active strategy config found.
+        """
+        # Get the active config ID
+        cursor = await db.execute(
+            "SELECT id FROM strategy_configs WHERE enabled = 1 LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="No active strategy config found")
+
+        config_id = row["id"]
+
+        # Update the mode
+        await db.execute(
+            "UPDATE strategy_configs SET mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (mode_data.mode, config_id),
+        )
+        await db.commit()
+
+        return CustomJSONResponse(content={"mode": mode_data.mode})
 
     # Serve static HTML page
     @app.get("/")
