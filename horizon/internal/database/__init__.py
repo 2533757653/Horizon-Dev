@@ -1,0 +1,1 @@
+# Database module for Horizon Trading Platform

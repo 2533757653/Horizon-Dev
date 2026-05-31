@@ -1,0 +1,26 @@
+Metadata-Version: 2.4
+Name: horizon
+Version: 0.1.0
+Summary: Horizon Trading Platform - Quantitative Trading System
+Author-email: Horizon Trading Team <team@horizon-trading.dev>
+License: MIT
+Keywords: trading,quantitative,crypto,binance,hyperliquid
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Office/Business :: Financial :: Trading
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.32.0
+Requires-Dist: aiosqlite>=0.20.0
+Requires-Dist: aiohttp>=3.11.0
+Requires-Dist: pydantic>=2.9.0
+Requires-Dist: pydantic-settings>=2.6.0
+Requires-Dist: pyyaml>=6.0.2
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: apscheduler>=3.11.0
+Requires-Dist: anthropic>=0.40.0
+Provides-Extra: dev
+Requires-Dist: httpx>=0.27.0; extra == "dev"
