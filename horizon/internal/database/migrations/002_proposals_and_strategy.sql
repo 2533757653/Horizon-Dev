@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS technical_indicators (
 );
 
 -- Seed data: Default long-term strategy configuration
-INSERT INTO strategy_configs (
+-- Uses OR IGNORE so this is idempotent (safe to re-run)
+INSERT OR IGNORE INTO strategy_configs (
     name,
     enabled,
     mode,
