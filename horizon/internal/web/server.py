@@ -82,20 +82,20 @@ class RejectRequestModel(BaseModel):
 
 
 class StrategyConfigUpdateModel(BaseModel):
-    """Request model for updating strategy configuration."""
+    """Request model for updating strategy configuration (partial updates allowed)."""
 
-    min_confidence_threshold: int = Field(..., ge=0, le=100, description="Minimum confidence threshold (0-100)")
-    max_risk_tier: Literal["low", "medium", "high"] = Field(..., description="Maximum risk tier")
-    analysis_interval_hours: int = Field(..., ge=1, description="Analysis interval in hours")
-    asset_whitelist: list[str] = Field(..., description="List of asset symbols to trade")
-    max_position_pct: float = Field(..., gt=0, description="Maximum position size as percentage of portfolio")
-    max_daily_loss_pct: float = Field(..., ge=0, description="Maximum daily loss as percentage")
-    max_exchange_exposure_pct: float = Field(..., gt=0, description="Maximum exchange exposure as percentage")
-    cooldown_seconds: int = Field(..., ge=0, description="Cooldown period between trades in seconds")
-    order_min_notional: float = Field(..., gt=0, description="Minimum order notional value")
-    order_max_notional: float = Field(..., gt=0, description="Maximum order notional value")
-    price_drift_expiry_pct: float = Field(..., gt=0, description="Price drift threshold for proposal expiry")
-    system_prompt: str = Field(..., min_length=1, description="System prompt for LLM analysis")
+    min_confidence_threshold: Optional[int] = Field(None, ge=0, le=100, description="Minimum confidence threshold (0-100)")
+    max_risk_tier: Optional[Literal["low", "medium", "high"]] = Field(None, description="Maximum risk tier")
+    analysis_interval_hours: Optional[int] = Field(None, ge=1, description="Analysis interval in hours")
+    asset_whitelist: Optional[list[str]] = Field(None, description="List of asset symbols to trade")
+    max_position_pct: Optional[float] = Field(None, gt=0, description="Maximum position size as percentage of portfolio")
+    max_daily_loss_pct: Optional[float] = Field(None, ge=0, description="Maximum daily loss as percentage")
+    max_exchange_exposure_pct: Optional[float] = Field(None, gt=0, description="Maximum exchange exposure as percentage")
+    cooldown_seconds: Optional[int] = Field(None, ge=0, description="Cooldown period between trades in seconds")
+    order_min_notional: Optional[float] = Field(None, gt=0, description="Minimum order notional value")
+    order_max_notional: Optional[float] = Field(None, gt=0, description="Maximum order notional value")
+    price_drift_expiry_pct: Optional[float] = Field(None, gt=0, description="Price drift threshold for proposal expiry")
+    system_prompt: Optional[str] = Field(None, min_length=1, description="System prompt for LLM analysis")
 
 
 class StrategyModeModel(BaseModel):
@@ -549,10 +549,10 @@ def create_app(
 
     @app.put("/api/strategy/config")
     async def update_strategy_config(config_data: StrategyConfigUpdateModel) -> JSONResponse:
-        """Update the active strategy configuration.
+        """Update the active strategy configuration (partial updates supported).
 
         Args:
-            config_data: Updated configuration fields.
+            config_data: Updated configuration fields (only non-None fields are updated).
 
         Returns:
             Updated strategy config.
@@ -572,45 +572,54 @@ def create_app(
 
         config_id = row["id"]
 
-        # Convert asset_whitelist to JSON string for storage
-        asset_whitelist_json = json.dumps(config_data.asset_whitelist)
+        # Build dynamic UPDATE based on provided fields
+        updates = []
+        params = []
+        if config_data.min_confidence_threshold is not None:
+            updates.append("min_confidence_threshold = ?")
+            params.append(config_data.min_confidence_threshold)
+        if config_data.max_risk_tier is not None:
+            updates.append("max_risk_tier = ?")
+            params.append(config_data.max_risk_tier)
+        if config_data.analysis_interval_hours is not None:
+            updates.append("analysis_interval_hours = ?")
+            params.append(config_data.analysis_interval_hours)
+        if config_data.asset_whitelist is not None:
+            updates.append("asset_whitelist = ?")
+            params.append(json.dumps(config_data.asset_whitelist))
+        if config_data.max_position_pct is not None:
+            updates.append("max_position_pct = ?")
+            params.append(config_data.max_position_pct)
+        if config_data.max_daily_loss_pct is not None:
+            updates.append("max_daily_loss_pct = ?")
+            params.append(config_data.max_daily_loss_pct)
+        if config_data.max_exchange_exposure_pct is not None:
+            updates.append("max_exchange_exposure_pct = ?")
+            params.append(config_data.max_exchange_exposure_pct)
+        if config_data.cooldown_seconds is not None:
+            updates.append("cooldown_seconds = ?")
+            params.append(config_data.cooldown_seconds)
+        if config_data.order_min_notional is not None:
+            updates.append("order_min_notional = ?")
+            params.append(config_data.order_min_notional)
+        if config_data.order_max_notional is not None:
+            updates.append("order_max_notional = ?")
+            params.append(config_data.order_max_notional)
+        if config_data.price_drift_expiry_pct is not None:
+            updates.append("price_drift_expiry_pct = ?")
+            params.append(config_data.price_drift_expiry_pct)
+        if config_data.system_prompt is not None:
+            updates.append("system_prompt = ?")
+            params.append(config_data.system_prompt)
 
-        # Update the strategy config
-        await db.execute(
-            """
-            UPDATE strategy_configs SET
-                min_confidence_threshold = ?,
-                max_risk_tier = ?,
-                analysis_interval_hours = ?,
-                asset_whitelist = ?,
-                max_position_pct = ?,
-                max_daily_loss_pct = ?,
-                max_exchange_exposure_pct = ?,
-                cooldown_seconds = ?,
-                order_min_notional = ?,
-                order_max_notional = ?,
-                price_drift_expiry_pct = ?,
-                system_prompt = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (
-                config_data.min_confidence_threshold,
-                config_data.max_risk_tier,
-                config_data.analysis_interval_hours,
-                asset_whitelist_json,
-                config_data.max_position_pct,
-                config_data.max_daily_loss_pct,
-                config_data.max_exchange_exposure_pct,
-                config_data.cooldown_seconds,
-                config_data.order_min_notional,
-                config_data.order_max_notional,
-                config_data.price_drift_expiry_pct,
-                config_data.system_prompt,
-                config_id,
-            ),
-        )
-        await db.commit()
+        if updates:
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(config_id)
+            await db.execute(
+                f"UPDATE strategy_configs SET {', '.join(updates)} WHERE id = ?",
+                tuple(params),
+            )
+            await db.commit()
 
         # Fetch and return the updated config
         cursor = await db.execute(
