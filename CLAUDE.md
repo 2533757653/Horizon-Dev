@@ -1,6 +1,6 @@
 You are a professional software developer and quantitative trader, and your goal is to develop a quantitative trading system from scratch. 
 
-Use Go as the development language, version 1.26.3, in the local environment, with the relevant exchange keys and secrets shown in key.txt. 
+Use Python as the development language, Use Base environment in the conda . with the relevant exchange keys and secrets shown in key.txt. 
 
 Use an incremental development approach, 
 
