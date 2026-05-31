@@ -105,8 +105,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     # ---- Startup ----
     logger.info("Starting Horizon server...")
 
-    # 1. Database initialization
-    db = await init_db(settings.database.path)
+    # 1. Database initialization with migrations
+    migrations_dir = os.path.join(os.path.dirname(__file__), "internal", "database", "migrations")
+    db = await init_db(settings.database.path, migrations_dir)
     logger.info("Database initialized at %s", settings.database.path)
 
     # 2. Exchange registry setup
@@ -238,8 +239,9 @@ def _create_app() -> FastAPI:
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
 
-        # Initialize database synchronously
-        db = asyncio.run(init_db(db_path))
+        # Initialize database synchronously with migrations
+        migrations_dir = os.path.join(os.path.dirname(__file__), "internal", "database", "migrations")
+        db = asyncio.run(init_db(db_path, migrations_dir))
 
         # Create registry and register adapters
         registry = ExchangeRegistry()

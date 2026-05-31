@@ -252,7 +252,39 @@ def create_app(
                 symbol=symbol,
                 limit=100,
             )
-            return CustomJSONResponse(content=orders)
+            # Handle both dict objects and OrderResult objects
+            def serialize_order(o):
+                if hasattr(o, 'order_id'):  # It's an OrderResult object
+                    return {
+                        "order_id": o.order_id,
+                        "exchange_order_id": o.exchange_order_id,
+                        "exchange": o.exchange,
+                        "symbol": o.symbol,
+                        "side": o.side,
+                        "order_type": o.order_type,
+                        "price": str(o.price) if o.price else None,
+                        "volume": str(o.volume),
+                        "filled_volume": str(o.filled_volume),
+                        "status": o.status,
+                        "created_at_ms": o.created_at_ms,
+                        "updated_at_ms": o.updated_at_ms,
+                    }
+                else:  # It's a dict
+                    return {
+                        "order_id": o.get("id"),
+                        "exchange_order_id": o.get("exchange_order_id"),
+                        "exchange": o.get("exchange"),
+                        "symbol": o.get("symbol"),
+                        "side": o.get("side"),
+                        "order_type": o.get("order_type"),
+                        "price": str(o.get("price")) if o.get("price") else None,
+                        "volume": str(o.get("volume")),
+                        "filled_volume": str(o.get("filled_volume", 0)),
+                        "status": o.get("status"),
+                        "created_at_ms": 0,
+                        "updated_at_ms": 0,
+                    }
+            return CustomJSONResponse(content=[serialize_order(o) for o in orders])
 
     # Serve static HTML page
     @app.get("/")
