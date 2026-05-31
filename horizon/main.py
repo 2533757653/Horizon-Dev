@@ -393,6 +393,26 @@ def _create_app() -> FastAPI:
             db=db,
         )
 
+        # Create proposal queue
+        strategy_config = {
+            "id": 1,
+            "name": "default_long_term",
+            "enabled": 1,
+            "model": settings.llm.model,
+            "analysis_interval_hours": settings.llm.analysis_interval_hours,
+            "system_prompt": "You are a quantitative trading analyst for Horizon.",
+            "asset_whitelist": '["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"]',
+            "max_position_pct": 20.0,
+            "max_daily_loss_pct": 5.0,
+            "min_confidence_threshold": 75,
+            "max_risk_tier": "low",
+        }
+        proposal_queue = ProposalQueue(
+            db=db,
+            order_manager=order_manager,
+            strategy_config=strategy_config,
+        )
+
         # Call the web server's create_app - this returns an app with all endpoints
         application = _create_app_func(
             settings=settings,
@@ -401,6 +421,7 @@ def _create_app() -> FastAPI:
             fetcher=fetcher,
             order_manager=order_manager,
             portfolio_tracker=portfolio_tracker,
+            proposal_queue=proposal_queue,
         )
 
         # Override lifespan with our custom one for startup/shutdown
