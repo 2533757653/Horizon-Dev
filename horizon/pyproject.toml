@@ -2,20 +2,12 @@
 name = "horizon"
 version = "0.1.0"
 description = "Horizon Trading Platform - Quantitative Trading System"
-readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
     { name = "Horizon Trading Team", email = "team@horizon-trading.dev" }
 ]
 keywords = ["trading", "quantitative", "crypto", "binance", "hyperliquid"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Office/Business :: Financial :: Trading",
-]
 
 dependencies = [
     "fastapi>=0.115.0",
@@ -37,6 +29,11 @@ dev = [
 
 [project.scripts]
 horizon-server = "horizon.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["horizon*"]
+exclude = ["horizon/tests/*", "horizon/data/*", "horizon/.git/*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

@@ -24,7 +24,7 @@ exchanges:
     wallet_address: "0x8E373704658101D5BAEfAfCd24e23f56F9B17F1c"
     private_key: "e3f71933c40938f0f2df0b10ce888bff699144ac4fb0e9d50eef3fd1b8e5d4d5"
   bitget:
-    enabled: true
+    enabled: false
     recv_window_ms: 5000
     api_key: "bg_745a999dfaf1dec65c9a249f48be003a"
     api_secret: "014ba3293f82c66f03153f43c846cbf2b0605bd70d51a7d1cdb7b36cee505e4e"

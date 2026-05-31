@@ -101,7 +101,7 @@ class HyperliquidAdapter(ExchangeAdapter):
         """Fetch current ticker for a symbol.
 
         Args:
-            symbol: Trading pair symbol (e.g., 'BTC/USDT').
+            symbol: Trading pair symbol (e.g., 'BTCUSDT' or 'BTC/USDT').
 
         Returns:
             Ticker with current price and volume information.
@@ -110,19 +110,25 @@ class HyperliquidAdapter(ExchangeAdapter):
             ExchangeError: If the request fails.
         """
         payload = {"type": "metaAndAssetCtxs"}
-        data = await self._request(payload)
+        response = await self._request(payload)
+
+        # Hyperliquid API returns {"response": {...}} format
+        data = response.get("response", {}) if isinstance(response, dict) else response
 
         # Parse meta and asset contexts to find the requested symbol
-        meta = data.get("meta", {})
-        asset_ctxs = data.get("assetCtxs", [])
+        # The data is a list: [meta, assetCtxs]
+        if not isinstance(data, list) or len(data) < 2:
+            raise ExchangeError(f"Hyperliquid: unexpected response format for {symbol}")
+
+        asset_ctxs = data[1] if len(data) > 1 else []
 
         # Find the coin name from the symbol (strip / from symbol)
-        coin = symbol.replace("/", "")
+        coin = symbol.replace("/", "").replace("USDT", "").replace("USDC", "")
 
         # Find matching asset context
         ticker_data = None
         for ctx in asset_ctxs:
-            if ctx.get("coin") == coin:
+            if isinstance(ctx, dict) and ctx.get("coin") == coin:
                 ticker_data = ctx
                 break
 
@@ -145,7 +151,7 @@ class HyperliquidAdapter(ExchangeAdapter):
         """Fetch order book for a symbol.
 
         Args:
-            symbol: Trading pair symbol (e.g., 'BTC/USDT').
+            symbol: Trading pair symbol (e.g., 'BTCUSDT' or 'BTC/USDT').
             depth: Number of price levels to return.
 
         Returns:
@@ -154,9 +160,15 @@ class HyperliquidAdapter(ExchangeAdapter):
         Raises:
             ExchangeError: If the request fails.
         """
-        coin = symbol.replace("/", "")
+        coin = symbol.replace("/", "").replace("USDT", "").replace("USDC", "")
         payload = {"type": "l2Book", "coin": coin}
-        data = await self._request(payload)
+        response = await self._request(payload)
+
+        # Hyperliquid API returns {"response": {...}} format
+        data = response.get("response", {}) if isinstance(response, dict) else response
+
+        if not isinstance(data, dict):
+            raise ExchangeError(f"Hyperliquid: invalid orderbook response for {symbol}")
 
         levels = data.get("levels", [])
         if len(levels) < 2:
