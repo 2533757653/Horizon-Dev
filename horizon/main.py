@@ -157,25 +157,26 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     # 2b. Initialize symbol cache
     symbol_cache = SymbolCache(db)
 
-    # 2c. Set initial active exchanges (all enabled exchanges)
-    active_exchanges = {adapter.name for adapter in registry.list_enabled() if adapter.enabled}
-    logger.info("Active exchanges: %s", sorted(active_exchanges))
+    # 2c. Set active exchange from settings (single exchange mode)
+    active_exchange = settings.exchanges.active_exchange
+    logger.info("Active exchange: %s", active_exchange)
 
-    # 2d. Refresh symbol cache for all active exchanges on startup
-    # Use a timeout per exchange to prevent one slow API from blocking startup
-    for exchange_name in active_exchanges:
-        adapter = registry.get(exchange_name)
-        if adapter:
-            try:
-                await asyncio.wait_for(
-                    symbol_cache.refresh_for_exchange(adapter),
-                    timeout=10.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning("Symbol cache refresh timed out for %s", exchange_name)
-            except Exception as e:
-                logger.warning("Symbol cache refresh failed for %s: %s", exchange_name, e)
-    logger.info("Symbol cache populated from %d exchange(s)", len(active_exchanges))
+    # 2d. Refresh symbol cache from active exchange on startup
+    adapter = registry.get(active_exchange)
+    if adapter and adapter.enabled:
+        try:
+            await asyncio.wait_for(
+                symbol_cache.refresh_active_exchange(adapter),
+                timeout=10.0,
+            )
+            logger.info("Symbol cache refreshed from active exchange: %s", active_exchange)
+        except asyncio.TimeoutError:
+            logger.warning("Symbol cache refresh timed out for %s", active_exchange)
+        except Exception as e:
+            logger.warning("Symbol cache refresh failed for %s: %s", active_exchange, e)
+    else:
+        logger.warning("Active exchange '%s' not found or not enabled", active_exchange)
+    logger.info("Symbol cache populated from active exchange: %s", active_exchange)
 
     # 2e. Set default active PairList (first discovered)
     available = pairlist_registry.list_all()
@@ -192,6 +193,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         registry=registry,
         db=db,
         active_pairlist=active_pairlist,
+        active_exchange=active_exchange,
         poll_interval_seconds=settings.trading.market_data_poll_interval_seconds,
     )
 
@@ -200,6 +202,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         registry=registry,
         db=db,
         fetcher=fetcher,
+        active_exchange=active_exchange,
         snapshot_interval_seconds=settings.trading.portfolio_snapshot_interval_seconds,
     )
 
@@ -207,6 +210,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     order_manager = OrderManager(
         registry=registry,
         db=db,
+        active_exchange=active_exchange,
     )
 
     # Store components in app state
@@ -217,7 +221,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     application.state.portfolio_tracker = portfolio_tracker
     application.state.pairlist_registry = pairlist_registry
     application.state.active_pairlist = active_pairlist
-    application.state.active_exchanges = active_exchanges
+    application.state.active_exchange = active_exchange
     application.state.symbol_cache = symbol_cache
 
     # 6. Start background tasks
