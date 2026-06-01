@@ -18,11 +18,13 @@ from ..exchange.registry import ExchangeRegistry
 from ..marketdata.fetcher import MarketDataFetcher
 from ..ordermanager.manager import OrderManager, OrderSubmissionError
 from ..portfolio.tracker import PortfolioTracker
+from ..datasource import KlineCache, DataSourceRegistry
 if TYPE_CHECKING:
     from ..pairlist.base import PairList
 else:
     from ..pairlist.registry import PairListRegistry
     from ..pairlist.cache import SymbolCache
+    from ..datasource.cryptocompare import CryptoCompareAdapter
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -115,6 +117,26 @@ def create_app(
     app.state.fetcher = fetcher
     app.state.order_manager = order_manager
     app.state.portfolio_tracker = portfolio_tracker
+
+    # Initialize kline cache and datasource
+    kline_cache = KlineCache(
+        cache_file=settings.datasource.cache_file,
+        stale_seconds=settings.datasource.cache_stale_seconds,
+    )
+    kline_cache.load()
+
+    cc_adapter = CryptoCompareAdapter(
+        api_key=settings.datasource.cryptocompare_api_key,
+        base_url=settings.datasource.cryptocompare_base_url,
+    )
+
+    datasource_registry = DataSourceRegistry(
+        cache=kline_cache,
+        cryptocompare_adapter=cc_adapter,
+    )
+
+    app.state.kline_cache = kline_cache
+    app.state.datasource_registry = datasource_registry
 
     # Mount static files
     app.mount("/static", StaticFiles(directory="horizon/internal/web/static"), name="static")
@@ -300,25 +322,30 @@ def create_app(
         symbol: str,
         timeframe: str = Query("1h", description="Timeframe: 1m, 5m, 15m, 1h, 4h, 1d"),
         limit: int = Query(500, description="Max candles to return"),
+        refresh: bool = Query(False, description="Force refresh from API"),
     ) -> JSONResponse:
-        """Get historical OHLCV kline/candlestick data for a symbol."""
-        registry: ExchangeRegistry = app.state.registry
-        settings: Settings = app.state.settings
-        active_exchange = settings.exchanges.active_exchange
+        """Get historical OHLCV kline/candlestick data for a symbol.
 
-        adapter = registry.get(active_exchange)
-        if adapter is None or not adapter.enabled:
-            raise HTTPException(status_code=404, detail=f"Active exchange '{active_exchange}' not available")
+        Uses lazy loading with cache:
+        - Returns cached data if fresh (not stale)
+        - Fetches from CryptoCompare if stale or refresh=true
+        """
+        datasource: DataSourceRegistry = app.state.datasource_registry
 
         try:
-            candles = await adapter.fetch_klines(symbol, timeframe, limit)
+            candles = await datasource.get_klines(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                force_refresh=refresh,
+            )
         except Exception as e:
             raise HTTPException(status_code=404, detail=f"No kline data for {symbol}: {str(e)}")
 
         return CustomJSONResponse(content={
             "symbol": symbol,
             "timeframe": timeframe,
-            "exchange": active_exchange,
+            "exchange": "cryptocompare",
             "candles": [
                 {
                     "time": c["time"],
