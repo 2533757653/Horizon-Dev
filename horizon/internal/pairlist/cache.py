@@ -28,35 +28,35 @@ class SymbolCache:
         Returns:
             Number of symbols inserted.
         """
-        try:
-            symbols = await adapter.fetch_all_symbols()
-        except Exception as e:
-            logger.warning("Failed to fetch symbols from %s: %s", adapter.name, e)
+        symbols = await adapter.fetch_all_symbols()
+        if not symbols:
+            await self._db.execute("DELETE FROM exchange_symbols WHERE exchange = ?", (adapter.name,))
+            await self._db.commit()
             return 0
 
-        # Clear old entries for this exchange
-        await self._db.execute(
-            "DELETE FROM exchange_symbols WHERE exchange = ?",
-            (adapter.name,),
-        )
-
         now_ms = int(time.time() * 1000)
-        for sym in symbols:
-            await self._db.execute(
-                """INSERT INTO exchange_symbols
-                   (exchange, symbol, base_asset, quote_asset, volume_24h, price, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    sym.exchange,
-                    sym.symbol,
-                    sym.base_asset,
-                    sym.quote_asset,
-                    str(sym.volume_24h) if sym.volume_24h is not None else None,
-                    str(sym.price) if sym.price is not None else None,
-                    now_ms,
-                ),
+        # Prepare batch data
+        batch = [
+            (
+                adapter.name,
+                sym.symbol,
+                sym.base_asset,
+                sym.quote_asset,
+                str(sym.volume_24h) if sym.volume_24h is not None else None,
+                str(sym.price) if sym.price is not None else None,
+                now_ms,
             )
+            for sym in symbols
+        ]
 
+        # Delete + batch insert in single transaction
+        await self._db.execute("DELETE FROM exchange_symbols WHERE exchange = ?", (adapter.name,))
+        await self._db.executemany(
+            """INSERT INTO exchange_symbols
+               (exchange, symbol, base_asset, quote_asset, volume_24h, price, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            batch,
+        )
         await self._db.commit()
         logger.info("Refreshed %d symbols from %s", len(symbols), adapter.name)
         return len(symbols)
