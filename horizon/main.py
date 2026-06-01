@@ -4,13 +4,16 @@ Wires all components together with correct startup/shutdown sequence.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
 import time
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from typing import Any, AsyncGenerator
 
+import aiosqlite
 import uvicorn
 from fastapi import FastAPI
 
@@ -21,11 +24,16 @@ from horizon.internal.exchange.bitget import BitgetAdapter
 from horizon.internal.exchange.hyperliquid import HyperliquidAdapter
 from horizon.internal.exchange.htx import HTXAdapter
 from horizon.internal.exchange.registry import ExchangeRegistry
+from horizon.internal.guardrails.cooldown_tracker import CooldownTracker
+from horizon.internal.guardrails.evaluator import RiskGuardrailEvaluator
+from horizon.internal.guardrails.rules import StrategyConfig
 from horizon.internal.marketdata.fetcher import MarketDataFetcher
 from horizon.internal.ordermanager.manager import OrderManager
 from horizon.internal.pairlist import PairListRegistry, SymbolCache
 from horizon.internal.pairlist.base import PairList
+from horizon.internal.paper.simulator import PaperTradingSimulator
 from horizon.internal.portfolio.tracker import PortfolioTracker
+from horizon.internal.proposals.queue import ProposalQueue
 
 
 def _setup_logging() -> None:
@@ -94,6 +102,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     Handles startup and shutdown events for the Horizon Trading Platform.
     """
     logger = logging.getLogger(__name__)
+
+    # Track background tasks for clean shutdown
+    background_tasks: list[asyncio.Task] = []
 
     # ---- Startup ----
     logger.info("Starting Horizon server...")
@@ -206,12 +217,50 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         snapshot_interval_seconds=settings.trading.portfolio_snapshot_interval_seconds,
     )
 
-    # 5. Order manager setup
+    # 5. Load strategy config from database
+    strategy_config = await _load_strategy_config(db)
+    if strategy_config is None:
+        logger.warning("No strategy config found in database, using defaults")
+        strategy_config = _get_default_strategy_config()
+
+    # 6. CooldownTracker setup
+    cooldown_tracker = CooldownTracker(db)
+    logger.info("CooldownTracker initialized")
+
+    # 7. RiskGuardrailEvaluator setup
+    guardrail_evaluator = RiskGuardrailEvaluator(
+        db=db,
+        cooldown_tracker=cooldown_tracker,
+        strategy_config=strategy_config,
+        fetcher=fetcher,
+    )
+    logger.info("RiskGuardrailEvaluator initialized")
+
+    # 8. PaperTradingSimulator setup
+    paper_simulator = PaperTradingSimulator(db=db, fetcher=fetcher)
+    logger.info("PaperTradingSimulator initialized")
+
+    # 9. OrderManager setup with guardrail_evaluator
     order_manager = OrderManager(
         registry=registry,
         db=db,
         active_exchange=active_exchange,
+        guardrail_evaluator=guardrail_evaluator,
+        cooldown_tracker=cooldown_tracker,
+        strategy_config=strategy_config,
     )
+    logger.info("OrderManager initialized with guardrail_evaluator")
+
+    # 10. ProposalQueue setup with guardrail_evaluator and paper_simulator
+    proposal_queue = ProposalQueue(
+        db=db,
+        order_manager=order_manager,
+        strategy_config=strategy_config,
+        guardrail_evaluator=guardrail_evaluator,
+        paper_simulator=paper_simulator,
+    )
+    proposal_queue.set_registry(registry)
+    logger.info("ProposalQueue initialized with guardrail_evaluator and paper_simulator")
 
     # Store components in app state
     application.state.db = db
@@ -223,11 +272,53 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     application.state.active_pairlist = active_pairlist
     application.state.active_exchange = active_exchange
     application.state.symbol_cache = symbol_cache
+    application.state.cooldown_tracker = cooldown_tracker
+    application.state.guardrail_evaluator = guardrail_evaluator
+    application.state.paper_simulator = paper_simulator
+    application.state.proposal_queue = proposal_queue
 
-    # 6. Start background tasks
+    # 11. Start background tasks
+
+    # Start market data fetcher
     await fetcher.start()
+
+    # Start portfolio tracker
     await portfolio_tracker.start()
+
+    # Start order manager sync loop
     await order_manager.start_sync_loop()
+
+    # Start auto-execution scanner
+    await proposal_queue.start_auto_execution_scanner()
+
+    # Start paper_simulator.update_market_prices() loop (every 30 seconds)
+    async def paper_price_update_loop() -> None:
+        while True:
+            try:
+                await asyncio.sleep(30)
+                await paper_simulator.update_market_prices()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in paper price update loop: {e}")
+
+    paper_price_task = asyncio.create_task(paper_price_update_loop())
+    background_tasks.append(paper_price_task)
+
+    # Start cooldown_tracker.cleanup_expired() every 5 minutes
+    async def cooldown_cleanup_loop() -> None:
+        while True:
+            try:
+                await asyncio.sleep(300)  # 5 minutes
+                await cooldown_tracker.cleanup_expired()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in cooldown cleanup loop: {e}")
+
+    cooldown_cleanup_task = asyncio.create_task(cooldown_cleanup_loop())
+    background_tasks.append(cooldown_cleanup_task)
+
     logger.info("All background tasks started")
 
     logger.info("Horizon server started on %s:%s", settings.app.host, settings.app.port)
@@ -236,6 +327,20 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     # ---- Shutdown ----
     logger.info("Stopping Horizon server...")
+
+    # Cancel all background tasks
+    for task in background_tasks:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    logger.info("Background tasks cancelled")
+
+    # Stop auto-execution scanner
+    await proposal_queue.stop_auto_execution_scanner()
+    logger.info("Proposal queue auto-execution scanner stopped")
 
     # Stop fetcher
     await fetcher.stop()
@@ -254,6 +359,59 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Database connection closed")
 
     logger.info("Horizon server stopped")
+
+
+async def _load_strategy_config(db: aiosqlite.Connection) -> StrategyConfig | None:
+    """Load the active strategy config from the database.
+
+    Args:
+        db: Async SQLite database connection.
+
+    Returns:
+        StrategyConfig instance or None if not found.
+    """
+    cursor = await db.execute(
+        "SELECT * FROM strategy_configs WHERE enabled = 1 LIMIT 1"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+
+    # Parse asset_whitelist from JSON string if needed
+    asset_whitelist = row["asset_whitelist"]
+    if isinstance(asset_whitelist, str):
+        import json
+        try:
+            asset_whitelist = json.loads(asset_whitelist)
+        except json.JSONDecodeError:
+            asset_whitelist = []
+
+    return StrategyConfig(
+        asset_whitelist=asset_whitelist,
+        order_min_notional=Decimal(str(row["order_min_notional"])) if row["order_min_notional"] else Decimal("10"),
+        order_max_notional=Decimal(str(row["order_max_notional"])) if row["order_max_notional"] else Decimal("1000000"),
+        max_exchange_exposure_pct=row["max_exchange_exposure_pct"] if row["max_exchange_exposure_pct"] else 0.5,
+        max_position_pct=row["max_position_pct"] / 100.0 if row["max_position_pct"] else 0.3,
+        cooldown_seconds=row["cooldown_seconds"] if row["cooldown_seconds"] else 300,
+        max_daily_loss_pct=row["max_daily_loss_pct"] / 100.0 if row["max_daily_loss_pct"] else 0.05,
+    )
+
+
+def _get_default_strategy_config() -> StrategyConfig:
+    """Get default strategy config when none is found in database.
+
+    Returns:
+        StrategyConfig with default values.
+    """
+    return StrategyConfig(
+        asset_whitelist=[],
+        order_min_notional=Decimal("10"),
+        order_max_notional=Decimal("1000000"),
+        max_exchange_exposure_pct=0.5,
+        max_position_pct=0.3,
+        cooldown_seconds=300,
+        max_daily_loss_pct=0.05,
+    )
 
 
 def _create_app() -> FastAPI:
