@@ -5,6 +5,7 @@ and expiry scanning.
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -13,7 +14,10 @@ from typing import Optional
 import aiosqlite
 
 from ..exchange.registry import ExchangeRegistry
+from ..guardrails.evaluator import RiskGuardrailEvaluator, SystemMode
+from ..guardrails.rules import OrderRequest as GuardrailOrderRequest
 from ..ordermanager.manager import OrderManager
+from ..paper.simulator import PaperTradingSimulator
 from .models import ProposalStatus, TradeProposal
 
 logger = logging.getLogger(__name__)
@@ -37,6 +41,12 @@ class ProposalExpiredError(Exception):
     pass
 
 
+class InvalidSystemModeError(Exception):
+    """Raised when an operation is not allowed in the current system mode."""
+
+    pass
+
+
 class ProposalQueue:
     """Manages the state machine for trade proposals."""
 
@@ -45,6 +55,9 @@ class ProposalQueue:
         db: aiosqlite.Connection,
         order_manager: OrderManager,
         strategy_config: dict,
+        guardrail_evaluator: Optional[RiskGuardrailEvaluator] = None,
+        paper_simulator: Optional[PaperTradingSimulator] = None,
+        mode: SystemMode = SystemMode.PAPER,
     ):
         """Initialize the ProposalQueue.
 
@@ -52,11 +65,18 @@ class ProposalQueue:
             db: Async SQLite database connection.
             order_manager: OrderManager instance for submitting orders.
             strategy_config: Strategy configuration dictionary.
+            guardrail_evaluator: RiskGuardrailEvaluator instance for auto-execution.
+            paper_simulator: PaperTradingSimulator instance for paper trading.
+            mode: SystemMode for auto-execution (default PAPER).
         """
         self._db = db
         self._order_manager = order_manager
         self._strategy_config = strategy_config
+        self._guardrail_evaluator = guardrail_evaluator
+        self._paper_simulator = paper_simulator
+        self._mode = mode
         self._expiry_scanner_task: Optional[asyncio.Task] = None
+        self._auto_execution_scanner_task: Optional[asyncio.Task] = None
         self._registry: Optional[ExchangeRegistry] = None
 
     def set_registry(self, registry: ExchangeRegistry) -> None:
@@ -134,6 +154,7 @@ class ProposalQueue:
             ProposalNotFoundError: If proposal not found.
             InvalidProposalStateError: If proposal is not in PROPOSED state.
             ProposalExpiredError: If proposal has expired.
+            InvalidSystemModeError: If system is in COLLABORATIVE mode.
         """
         # Query the proposal
         cursor = await self._db.execute(
@@ -145,6 +166,14 @@ class ProposalQueue:
             raise ProposalNotFoundError(f"Proposal {proposal_id} not found")
 
         proposal = TradeProposal.from_row(row)
+
+        # Check current system mode
+        if self._guardrail_evaluator is not None:
+            current_mode = await self._guardrail_evaluator.get_current_mode()
+            if current_mode == SystemMode.COLLABORATIVE:
+                raise InvalidSystemModeError(
+                    f"Cannot approve proposal in COLLABORATIVE mode - manual approval required"
+                )
 
         # Check state
         if proposal.status != ProposalStatus.PROPOSED.value:
@@ -359,6 +388,187 @@ class ProposalQueue:
             except asyncio.CancelledError:
                 pass
             self._expiry_scanner_task = None
+
+    async def attempt_auto_execution(self, proposal: TradeProposal) -> bool:
+        """Attempt to automatically execute a proposal.
+
+        Args:
+            proposal: The proposal to attempt auto-execution for.
+
+        Returns:
+            True if auto-execution succeeded, False otherwise.
+        """
+        # 1. If status != PROPOSED: return False
+        if proposal.status != ProposalStatus.PROPOSED.value:
+            return False
+
+        # 2. can_autonomously_execute check
+        if self._guardrail_evaluator is None:
+            logger.warning(f"No guardrail evaluator configured for auto-execution")
+            return False
+
+        request = GuardrailOrderRequest(
+            symbol=proposal.symbol,
+            side=proposal.side,
+            order_type=proposal.order_type,
+            price=Decimal(str(proposal.price)) if proposal.price else None,
+            volume=Decimal(str(proposal.volume)),
+            exchange=proposal.exchange,
+            source="autonomous",
+            notional=Decimal(str(proposal.price or 0)) * Decimal(str(proposal.volume)),
+        )
+
+        can_execute, reason = await self._guardrail_evaluator.can_autonomously_execute(
+            proposal.confidence_score, proposal.risk_tier, request
+        )
+        if not can_execute:
+            logger.info(f"Proposal {proposal.id} cannot auto-execute: {reason}")
+            return False
+
+        # 3. evaluate_proposal check
+        guardrail_result = await self._guardrail_evaluator.evaluate_proposal(proposal)
+        if not guardrail_result.passed:
+            logger.info(
+                f"Proposal {proposal.id} failed guardrail evaluation: "
+                f"{guardrail_result.reason}"
+            )
+            # Record breach in guardrail_events (already done by evaluate_proposal)
+            return False
+
+        # 4-5. Execute based on mode
+        current_mode = await self._guardrail_evaluator.get_current_mode()
+        order_request = OrderManager.OrderRequest(
+            exchange=proposal.exchange,
+            symbol=proposal.symbol,
+            side=proposal.side,
+            order_type=proposal.order_type,
+            price=Decimal(str(proposal.price)) if proposal.price else None,
+            volume=Decimal(str(proposal.volume)),
+            source="autonomous",
+            proposal_id=proposal.id,
+        )
+
+        executed_order_id = None
+
+        if current_mode == SystemMode.PAPER:
+            # 4. PAPER mode: use paper simulator
+            if self._paper_simulator is None:
+                logger.warning(f"No paper simulator configured for auto-execution")
+                return False
+
+            if proposal.order_type == "market":
+                paper_result = await self._paper_simulator.simulate_market_order(
+                    proposal_id=proposal.id,
+                    exchange=proposal.exchange,
+                    symbol=proposal.symbol,
+                    side=proposal.side,
+                    volume=Decimal(str(proposal.volume)),
+                )
+            else:
+                paper_result = await self._paper_simulator.simulate_limit_order(
+                    proposal_id=proposal.id,
+                    exchange=proposal.exchange,
+                    symbol=proposal.symbol,
+                    side=proposal.side,
+                    price=Decimal(str(proposal.price)) if proposal.price else Decimal("0"),
+                    volume=Decimal(str(proposal.volume)),
+                )
+            executed_order_id = paper_result.order_id
+
+        elif current_mode == SystemMode.LIVE:
+            # 5. LIVE mode: submit via order manager
+            order_result = await self._order_manager.submit_order(order_request)
+            executed_order_id = order_result.order_id
+
+        else:
+            logger.warning(f"Auto-execution not supported in {current_mode.value} mode")
+            return False
+
+        # Update proposal status to AUTO_EXECUTED
+        now = datetime.now(timezone.utc)
+        await self._db.execute(
+            """
+            UPDATE proposals
+            SET status = ?, executed_order_id = ?, approved_at = ?
+            WHERE id = ?
+            """,
+            (ProposalStatus.AUTO_EXECUTED.value, executed_order_id, now, proposal.id),
+        )
+        await self._db.commit()
+
+        logger.info(
+            f"Proposal {proposal.id} auto-executed in {current_mode.value} mode, "
+            f"order_id: {executed_order_id}"
+        )
+        return True
+
+    async def start_auto_execution_scanner(self) -> None:
+        """Start the background auto-execution scanner task.
+
+        Runs every 30 seconds and auto-executes qualifying PROPOSED proposals.
+        """
+        if self._auto_execution_scanner_task is not None and not self._auto_execution_scanner_task.done():
+            return
+
+        self._auto_execution_scanner_task = asyncio.create_task(self._auto_execution_scanner_loop())
+
+    async def _auto_execution_scanner_loop(self) -> None:
+        """Background loop that periodically attempts auto-execution for proposals."""
+        while True:
+            try:
+                await asyncio.sleep(30)
+                await self._scan_and_auto_execute()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in auto-execution scanner: {e}")
+
+    async def _scan_and_auto_execute(self) -> None:
+        """Scan PROPOSED proposals and attempt auto-execution for qualifying ones."""
+        if self._guardrail_evaluator is None:
+            return
+
+        # Get autonomy thresholds from strategy config
+        min_confidence = getattr(self._strategy_config, "min_confidence_threshold", 75)
+        max_risk_tier = getattr(self._strategy_config, "max_risk_tier", "low")
+        risk_tier_order = {"low": 1, "medium": 2, "high": 3}
+        max_tier_value = risk_tier_order.get(max_risk_tier, 1)
+
+        cursor = await self._db.execute(
+            "SELECT * FROM proposals WHERE status = ?",
+            (ProposalStatus.PROPOSED.value,),
+        )
+        rows = await cursor.fetchall()
+
+        total = len(rows)
+        executed_count = 0
+
+        for row in rows:
+            proposal = TradeProposal.from_row(row)
+
+            # Pre-filter by confidence and risk tier
+            request_tier_value = risk_tier_order.get(proposal.risk_tier, 3)
+            if proposal.confidence_score < min_confidence:
+                continue
+            if request_tier_value > max_tier_value:
+                continue
+
+            # Attempt auto-execution
+            if await self.attempt_auto_execution(proposal):
+                executed_count += 1
+
+        if total > 0:
+            logger.info(f"Auto-exec scanner: checked {total}, executed {executed_count}")
+
+    async def stop_auto_execution_scanner(self) -> None:
+        """Stop the auto-execution scanner task."""
+        if self._auto_execution_scanner_task is not None:
+            self._auto_execution_scanner_task.cancel()
+            try:
+                await self._auto_execution_scanner_task
+            except asyncio.CancelledError:
+                pass
+            self._auto_execution_scanner_task = None
 
     async def get_proposals(
         self, status: Optional[ProposalStatus] = None, limit: int = 50

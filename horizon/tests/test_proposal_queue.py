@@ -15,10 +15,14 @@ import pytest_asyncio
 
 from horizon.internal.exchange.registry import ExchangeRegistry
 from horizon.internal.exchange.types import Ticker
+from horizon.internal.guardrails.evaluator import GuardrailResult, RiskGuardrailEvaluator, SystemMode
+from horizon.internal.guardrails.rules import StrategyConfig as GuardrailStrategyConfig
 from horizon.internal.ordermanager.manager import OrderManager, OrderResult
+from horizon.internal.paper.simulator import PaperTradingSimulator, PaperTradeResult
 from horizon.internal.proposals.models import ProposalStatus
 from horizon.internal.proposals.queue import (
     InvalidProposalStateError,
+    InvalidSystemModeError,
     ProposalExpiredError,
     ProposalNotFoundError,
     ProposalQueue,
@@ -119,9 +123,46 @@ class TestProposalQueue:
         return registry
 
     @pytest.fixture
-    def proposal_queue(self, db, order_manager, strategy_config, exchange_registry):
+    def guardrail_evaluator(self, db):
+        """Create mock RiskGuardrailEvaluator."""
+        evaluator = MagicMock(spec=RiskGuardrailEvaluator)
+        evaluator.get_current_mode = AsyncMock(return_value=SystemMode.PAPER)
+        evaluator.can_autonomously_execute = AsyncMock(return_value=(True, "allowed"))
+        evaluator.evaluate_proposal = AsyncMock(return_value=GuardrailResult(passed=True))
+        return evaluator
+
+    @pytest.fixture
+    def paper_simulator(self, db):
+        """Create mock PaperTradingSimulator."""
+        simulator = MagicMock(spec=PaperTradingSimulator)
+        simulator.simulate_market_order = AsyncMock(return_value=PaperTradeResult(
+            order_id="PAPER-123",
+            exchange="binance",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="market",
+            price=Decimal("95000"),
+            volume=Decimal("0.1"),
+            notional_value=Decimal("9500"),
+            status="filled",
+        ))
+        simulator.simulate_limit_order = AsyncMock(return_value=PaperTradeResult(
+            order_id="PAPER-456",
+            exchange="binance",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="limit",
+            price=Decimal("95000"),
+            volume=Decimal("0.1"),
+            notional_value=Decimal("9500"),
+            status="filled",
+        ))
+        return simulator
+
+    @pytest.fixture
+    def proposal_queue(self, db, order_manager, strategy_config, exchange_registry, guardrail_evaluator, paper_simulator):
         """Create ProposalQueue instance."""
-        queue = ProposalQueue(db, order_manager, strategy_config)
+        queue = ProposalQueue(db, order_manager, strategy_config, guardrail_evaluator, paper_simulator)
         queue.set_registry(exchange_registry)
         return queue
 
@@ -568,6 +609,346 @@ class TestTradeProposalIsExpired:
         proposal.status = ProposalStatus.APPROVED.value
         result = proposal.is_expired(Decimal("98000.0"))
         assert result is False
+
+
+class TestAutoExecution:
+    """Tests for auto-execution functionality."""
+
+    @pytest_asyncio.fixture
+    async def db(self):
+        """Create in-memory SQLite database with schema."""
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+
+        # Create minimal schema
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS proposals (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                order_type TEXT NOT NULL,
+                price REAL,
+                volume REAL NOT NULL,
+                confidence_score INTEGER NOT NULL,
+                risk_tier TEXT NOT NULL,
+                llm_rationale TEXT NOT NULL,
+                llm_raw_response TEXT,
+                technical_context TEXT,
+                market_snapshot TEXT NOT NULL,
+                portfolio_snapshot TEXT,
+                guardrail_result TEXT,
+                approved_by TEXT,
+                approved_at TIMESTAMP,
+                executed_order_id TEXT,
+                expires_at TIMESTAMP NOT NULL,
+                price_drift_threshold_pct REAL NOT NULL DEFAULT 3.0,
+                proposed_price REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create orders table for FK constraint
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                id TEXT PRIMARY KEY,
+                exchange TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                order_type TEXT NOT NULL,
+                price REAL,
+                volume REAL NOT NULL,
+                filled_volume REAL DEFAULT 0.0,
+                status TEXT NOT NULL,
+                source TEXT NOT NULL,
+                proposal_id TEXT,
+                exchange_order_id TEXT,
+                created_at INTEGER,
+                updated_at INTEGER
+            )
+        """)
+
+        # Create exchanges table for FK constraint
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS exchanges (
+                name TEXT PRIMARY KEY,
+                enabled INTEGER DEFAULT 1
+            )
+        """)
+        await conn.execute("INSERT INTO exchanges (name, enabled) VALUES ('binance', 1)")
+
+        # Create guardrail_events table for auto-execution
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS guardrail_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id TEXT,
+                proposal_id TEXT,
+                rule_name TEXT NOT NULL,
+                action_taken TEXT NOT NULL,
+                request_symbol TEXT,
+                request_exchange TEXT,
+                request_side TEXT,
+                request_volume REAL,
+                request_price REAL,
+                current_value REAL,
+                threshold_value REAL,
+                downgrade_active INTEGER DEFAULT 0,
+                downgrade_expires_at TIMESTAMP,
+                created_at TIMESTAMP
+            )
+        """)
+
+        await conn.commit()
+        yield conn
+        await conn.close()
+
+    @pytest.fixture
+    def order_manager(self, db):
+        """Create mock OrderManager."""
+        manager = MagicMock(spec=OrderManager)
+        manager.submit_order = AsyncMock()
+        return manager
+
+    @pytest.fixture
+    def strategy_config(self):
+        """Create strategy config with autonomy enabled."""
+        return {
+            "name": "test_strategy",
+            "min_confidence_threshold": 75,
+            "max_risk_tier": "low",
+            "autonomy_enabled": True,
+        }
+
+    @pytest.fixture
+    def exchange_registry(self):
+        """Create mock exchange registry."""
+        registry = MagicMock(spec=ExchangeRegistry)
+        return registry
+
+    @pytest.fixture
+    def guardrail_evaluator(self, db):
+        """Create mock RiskGuardrailEvaluator."""
+        evaluator = MagicMock(spec=RiskGuardrailEvaluator)
+        evaluator.get_current_mode = AsyncMock(return_value=SystemMode.PAPER)
+        evaluator.can_autonomously_execute = AsyncMock(return_value=(True, "allowed"))
+        evaluator.evaluate_proposal = AsyncMock(return_value=GuardrailResult(passed=True))
+        return evaluator
+
+    @pytest.fixture
+    def paper_simulator(self, db):
+        """Create mock PaperTradingSimulator."""
+        simulator = MagicMock(spec=PaperTradingSimulator)
+        simulator.simulate_market_order = AsyncMock(return_value=PaperTradeResult(
+            order_id="PAPER-123",
+            exchange="binance",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="market",
+            price=Decimal("95000"),
+            volume=Decimal("0.1"),
+            notional_value=Decimal("9500"),
+            status="filled",
+        ))
+        simulator.simulate_limit_order = AsyncMock(return_value=PaperTradeResult(
+            order_id="PAPER-456",
+            exchange="binance",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="limit",
+            price=Decimal("95000"),
+            volume=Decimal("0.1"),
+            notional_value=Decimal("9500"),
+            status="filled",
+        ))
+        return simulator
+
+    @pytest.fixture
+    def proposal_queue(self, db, order_manager, strategy_config, exchange_registry, guardrail_evaluator, paper_simulator):
+        """Create ProposalQueue instance."""
+        queue = ProposalQueue(db, order_manager, strategy_config, guardrail_evaluator, paper_simulator)
+        queue.set_registry(exchange_registry)
+        return queue
+
+    @pytest.fixture
+    def sample_proposal(self):
+        """Create a sample TradeProposal for auto-execution testing."""
+        return TradeProposal(
+            id=str(uuid.uuid4()),
+            status=ProposalStatus.PROPOSED.value,
+            exchange="binance",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="market",
+            price=None,
+            volume=0.1,
+            confidence_score=85,
+            risk_tier="low",
+            llm_rationale="Test rationale",
+            llm_raw_response="raw response",
+            technical_context="{}",
+            market_snapshot="{}",
+            portfolio_snapshot=None,
+            guardrail_result=None,
+            approved_by=None,
+            approved_at=None,
+            executed_order_id=None,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            price_drift_threshold_pct=3.0,
+            proposed_price=95000.0,
+            created_at=datetime.now(timezone.utc),
+        )
+
+    @pytest.mark.asyncio
+    async def test_attempt_auto_execution_success(
+        self, proposal_queue, sample_proposal, db
+    ):
+        """Test successful auto-execution in PAPER mode."""
+        await proposal_queue.enqueue(sample_proposal)
+
+        result = await proposal_queue.attempt_auto_execution(sample_proposal)
+
+        assert result is True
+        # Verify status was updated
+        cursor = await db.execute(
+            "SELECT status, executed_order_id FROM proposals WHERE id = ?",
+            (sample_proposal.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.AUTO_EXECUTED.value
+        assert row["executed_order_id"] == "PAPER-123"
+
+    @pytest.mark.asyncio
+    async def test_attempt_auto_execution_non_proposed_returns_false(
+        self, proposal_queue, sample_proposal, db
+    ):
+        """Test attempt_auto_execution returns False for non-PROPOSED proposal."""
+        sample_proposal.status = ProposalStatus.APPROVED.value
+        await proposal_queue.enqueue(sample_proposal)
+
+        result = await proposal_queue.attempt_auto_execution(sample_proposal)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_attempt_auto_execution_guardrail_rejection(
+        self, proposal_queue, sample_proposal, db, guardrail_evaluator
+    ):
+        """Test auto-execution fails when guardrail evaluation fails."""
+        await proposal_queue.enqueue(sample_proposal)
+
+        # Make guardrail evaluation fail
+        guardrail_evaluator.evaluate_proposal.return_value = GuardrailResult(
+            passed=False,
+            violated_rules=["order_notional"],
+            blocking=True,
+            reason="Order notional too small",
+        )
+
+        result = await proposal_queue.attempt_auto_execution(sample_proposal)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_attempt_auto_execution_live_mode(
+        self, proposal_queue, sample_proposal, db, guardrail_evaluator, order_manager
+    ):
+        """Test auto-execution in LIVE mode submits to order manager."""
+        await proposal_queue.enqueue(sample_proposal)
+
+        # Switch to LIVE mode
+        guardrail_evaluator.get_current_mode.return_value = SystemMode.LIVE
+        order_manager.submit_order.return_value = OrderResult(
+            order_id="ORDER-789",
+            exchange_order_id="exchange-order-789",
+            exchange="binance",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="market",
+            price=None,
+            volume=0.1,
+            filled_volume=0.0,
+            status="submitted",
+            created_at_ms=0,
+            updated_at_ms=0,
+        )
+
+        result = await proposal_queue.attempt_auto_execution(sample_proposal)
+
+        assert result is True
+        order_manager.submit_order.assert_called_once()
+        # Verify status was updated
+        cursor = await db.execute(
+            "SELECT status, executed_order_id FROM proposals WHERE id = ?",
+            (sample_proposal.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.AUTO_EXECUTED.value
+        assert row["executed_order_id"] == "ORDER-789"
+
+    @pytest.mark.asyncio
+    async def test_attempt_auto_execution_no_evaluator_returns_false(
+        self, db, order_manager, strategy_config, exchange_registry, paper_simulator, sample_proposal
+    ):
+        """Test auto-execution returns False when no guardrail evaluator is configured."""
+        # Create queue without guardrail_evaluator
+        queue = ProposalQueue(db, order_manager, strategy_config, None, paper_simulator)
+        await queue.enqueue(sample_proposal)
+
+        result = await queue.attempt_auto_execution(sample_proposal)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_approve_collaborative_mode_raises_error(
+        self, proposal_queue, sample_proposal, db, guardrail_evaluator
+    ):
+        """Test approve raises InvalidSystemModeError in COLLABORATIVE mode."""
+        await proposal_queue.enqueue(sample_proposal)
+
+        # Switch to COLLABORATIVE mode
+        guardrail_evaluator.get_current_mode.return_value = SystemMode.COLLABORATIVE
+
+        with pytest.raises(InvalidSystemModeError, match="COLLABORATIVE mode"):
+            await proposal_queue.approve(sample_proposal.id, "test_user")
+
+    @pytest.mark.asyncio
+    async def test_scan_and_auto_execute(
+        self, proposal_queue, sample_proposal, db
+    ):
+        """Test _scan_and_auto_execute processes proposals."""
+        await proposal_queue.enqueue(sample_proposal)
+
+        # Call the method directly instead of waiting for scanner
+        await proposal_queue._scan_and_auto_execute()
+
+        # Verify auto-execution happened
+        cursor = await db.execute(
+            "SELECT status FROM proposals WHERE id = ?",
+            (sample_proposal.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.AUTO_EXECUTED.value
+
+    @pytest.mark.asyncio
+    async def test_scan_and_auto_execute_below_threshold_unchanged(
+        self, proposal_queue, sample_proposal, db, guardrail_evaluator
+    ):
+        """Test proposals below confidence threshold remain PROPOSED."""
+        # Set confidence below threshold
+        sample_proposal.confidence_score = 50
+        await proposal_queue.enqueue(sample_proposal)
+
+        # Call the method directly instead of waiting for scanner
+        await proposal_queue._scan_and_auto_execute()
+
+        # Verify status was NOT updated
+        cursor = await db.execute(
+            "SELECT status FROM proposals WHERE id = ?",
+            (sample_proposal.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.PROPOSED.value
 
 
 if __name__ == "__main__":
