@@ -47,6 +47,7 @@ class ExchangesSettings(BaseSettings):
     htx: HTXConfig = Field(default_factory=HTXConfig)
     hyperliquid: HyperliquidConfig = Field(default_factory=HyperliquidConfig)
     bitget: BitgetConfig = Field(default_factory=BitgetConfig)
+    active_exchange: str = Field(default="hyperliquid", description="The active exchange for all operations")
 
 
 class AppSettings(BaseSettings):

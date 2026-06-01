@@ -14,8 +14,8 @@ exchanges:
   htx:
     enabled: true
     recv_window_ms: 5000
-    api_key: "J4ihibjwgnIGHB3Rruc45yQM4Mgu8Bl7mpEpRVXxsmFbAxJJteFTna9SmVcWF6BK"
-    api_secret: "XpHVRw7RZEOPxmjYkclYg3mCWZFJUVI6uLTXpW0zPuByGU5wxMAU52Mnu0KyI42i"
+    api_key: "61cb1905-ez2xc4vb6n-a4cd4bb3-beaf0"
+    api_secret: "8644b004-a24dafb8-23e76d11-295ee"
   hyperliquid:
     enabled: true
     recv_window_ms: 5000
@@ -29,6 +29,7 @@ exchanges:
     api_key: "bg_745a999dfaf1dec65c9a249f48be003a"
     api_secret: "014ba3293f82c66f03153f43c846cbf2b0605bd70d51a7d1cdb7b36cee505e4e"
     passphrase: "TJh20040226"
+  active_exchange: "hyperliquid"
 
 trading:
   market_data_poll_interval_seconds: 10
