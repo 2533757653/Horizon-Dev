@@ -321,7 +321,7 @@ def _create_app() -> FastAPI:
         pairlist_registry = PairListRegistry()
         pairlist_registry.discover("horizon.pairlists")
         symbol_cache = SymbolCache(db)
-        active_exchanges = {adapter.name for adapter in registry.list_enabled() if adapter.enabled}
+        active_exchange = settings.exchanges.active_exchange
 
         available = pairlist_registry.list_all()
         active_pairlist = pairlist_registry.create(available[0]["name"]) if available else None
@@ -330,6 +330,7 @@ def _create_app() -> FastAPI:
             registry=registry,
             db=db,
             active_pairlist=active_pairlist,
+            active_exchange=active_exchange,
             poll_interval_seconds=settings.trading.market_data_poll_interval_seconds,
         )
 
@@ -337,12 +338,14 @@ def _create_app() -> FastAPI:
             registry=registry,
             db=db,
             fetcher=fetcher,
+            active_exchange=active_exchange,
             snapshot_interval_seconds=settings.trading.portfolio_snapshot_interval_seconds,
         )
 
         order_manager = OrderManager(
             registry=registry,
             db=db,
+            active_exchange=active_exchange,
         )
 
         # Call the web server's create_app - this returns an app with all endpoints
