@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 import aiosqlite
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config.settings import Settings
@@ -114,6 +115,9 @@ def create_app(
     app.state.fetcher = fetcher
     app.state.order_manager = order_manager
     app.state.portfolio_tracker = portfolio_tracker
+
+    # Mount static files
+    app.mount("/static", StaticFiles(directory="horizon/internal/web/static"), name="static")
 
     # Health check endpoint
     @app.get("/api/health")
@@ -407,143 +411,8 @@ def create_app(
 
     # Serve static HTML page
     @app.get("/")
-    async def index() -> HTMLResponse:
+    async def index():
         """Serve the main dashboard page."""
-        html_content = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Horizon Trading Platform</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px 40px; }
-        .header h1 { font-size: 24px; font-weight: 600; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
-        .card { background: #1a1a2e; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        .card h2 { color: #667eea; margin-bottom: 16px; font-size: 18px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .stat { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #2a2a4a; }
-        .stat:last-child { border-bottom: none; }
-        .stat-label { color: #888; }
-        .stat-value { font-weight: 600; color: #fff; }
-        .portfolio-value { font-size: 32px; color: #667eea; font-weight: 700; margin: 20px 0; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #2a2a4a; }
-        th { color: #667eea; font-weight: 600; }
-        .positive { color: #4ade80; }
-        .negative { color: #f87171; }
-        .loading { text-align: center; padding: 40px; color: #888; }
-        .error { color: #f87171; padding: 20px; text-align: center; background: #2a1a1a; border-radius: 8px; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>Horizon Trading Platform</h1>
-    </div>
-    <div class="container">
-        <div class="grid">
-            <div class="card">
-                <h2>System Status</h2>
-                <div id="health">
-                    <div class="loading">Loading...</div>
-                </div>
-            </div>
-            <div class="card">
-                <h2>Portfolio Value</h2>
-                <div id="portfolio-value" class="portfolio-value">Loading...</div>
-                <div id="portfolio-breakdown"></div>
-            </div>
-        </div>
-        <div class="card">
-            <h2>Market Data</h2>
-            <div id="market-data">
-                <div class="loading">Loading...</div>
-            </div>
-        </div>
-        <div class="card">
-            <h2>Active Orders</h2>
-            <div id="orders">
-                <div class="loading">Loading...</div>
-            </div>
-        </div>
-    </div>
-    <script>
-        async function loadHealth() {
-            try {
-                const res = await fetch('/api/health');
-                const data = await res.json();
-                document.getElementById('health').innerHTML =
-                    '<div class="stat"><span class="stat-label">Status</span><span class="stat-value positive">' + data.status + '</span></div>' +
-                    '<div class="stat"><span class="stat-label">Timestamp</span><span class="stat-value">' + new Date(data.timestamp * 1000).toLocaleString() + '</span></div>';
-            } catch (e) {
-                document.getElementById('health').innerHTML = '<div class="error">Failed to load health data</div>';
-            }
-        }
-
-        async function loadPortfolio() {
-            try {
-                const res = await fetch('/api/portfolio');
-                const data = await res.json();
-                document.getElementById('portfolio-value').textContent = '$' + parseFloat(data.total_usdt_value).toLocaleString();
-                let breakdown = '';
-                for (const [exchange, balances] of Object.entries(data.exchanges)) {
-                    breakdown += '<div style="margin-top:16px;font-weight:600;color:#667eea;">' + exchange.toUpperCase() + '</div>';
-                    for (const b of balances) {
-                        breakdown += '<div class="stat"><span class="stat-label">' + b.asset + '</span><span class="stat-value">' + parseFloat(b.free).toLocaleString() + '</span></div>';
-                    }
-                }
-                document.getElementById('portfolio-breakdown').innerHTML = breakdown;
-            } catch (e) {
-                document.getElementById('portfolio-value').textContent = 'Error';
-            }
-        }
-
-        async function loadMarketData() {
-            const symbols = ['BTC/USDT', 'ETH/USDT'];
-            let html = '<table><tr><th>Symbol</th><th>Exchange</th><th>Price</th><th>Volume (24h)</th></tr>';
-            for (const symbol of symbols) {
-                try {
-                    const res = await fetch('/api/market-data/' + encodeURIComponent(symbol));
-                    const data = await res.json();
-                    for (const t of data.tickers) {
-                        html += '<tr><td>' + t.symbol + '</td><td>' + t.exchange + '</td><td>$' + parseFloat(t.price).toLocaleString() + '</td><td>' + parseFloat(t.volume_24h).toLocaleString() + '</td></tr>';
-                    }
-                } catch (e) {}
-            }
-            html += '</table>';
-            document.getElementById('market-data').innerHTML = html || '<div class="error">No market data available</div>';
-        }
-
-        async function loadOrders() {
-            try {
-                const res = await fetch('/api/orders?status=open');
-                const data = await res.json();
-                if (data.length === 0) {
-                    document.getElementById('orders').innerHTML = '<div style="color:#888;text-align:center;padding:20px;">No active orders</div>';
-                    return;
-                }
-                let html = '<table><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Type</th><th>Volume</th><th>Price</th><th>Status</th></tr>';
-                for (const o of data) {
-                    const sideClass = o.side === 'buy' ? 'positive' : 'negative';
-                    html += '<tr><td>' + o.order_id.substring(0, 8) + '...</td><td>' + o.symbol + '</td><td class="' + sideClass + '">' + o.side.toUpperCase() + '</td><td>' + o.order_type + '</td><td>' + parseFloat(o.volume).toLocaleString() + '</td><td>' + (o.price ? '$' + parseFloat(o.price).toLocaleString() : 'Market') + '</td><td>' + o.status + '</td></tr>';
-                }
-                html += '</table>';
-                document.getElementById('orders').innerHTML = html;
-            } catch (e) {
-                document.getElementById('orders').innerHTML = '<div class="error">Failed to load orders</div>';
-            }
-        }
-
-        loadHealth();
-        loadPortfolio();
-        loadMarketData();
-        loadOrders();
-        setInterval(() => { loadHealth(); loadPortfolio(); loadMarketData(); loadOrders(); }, 30000);
-    </script>
-</body>
-</html>"""
-        return HTMLResponse(content=html_content)
+        return RedirectResponse(url="/static/index.html")
 
     return app
