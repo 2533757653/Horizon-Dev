@@ -2,7 +2,7 @@
 
 let formEl = null;
 let exchanges = [];
-let selectedSymbol = 'BTC/USDT';
+let selectedSymbol = 'BTCUSDT';
 
 export async function initOrderForm(formElement, getExchangesFn) {
     formEl = formElement;

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Horizon - Debug Test</title>
+    <style>
+        body { font-family: monospace; background: #0d0d1a; color: #e0e0e0; padding: 20px; }
+        .test { margin: 10px 0; padding: 10px; border: 1px solid #2a2a4a; }
+        .pass { color: #4ade80; }
+        .fail { color: #f87171; }
+        .pending { color: #fbbf24; }
+    </style>
+</head>
+<body>
+    <h1>Horizon Debug Test</h1>
+    <div id="results"></div>
+
+    <script type="module">
+    const results = document.getElementById('results');
+
+    function log(msg, status = 'pending') {
+        const div = document.createElement('div');
+        div.className = `test ${status}`;
+        div.textContent = `[${status.toUpperCase()}] ${msg}`;
+        results.appendChild(div);
+        console.log(`[${status}] ${msg}`);
+    }
+
+    async function runTests() {
+        // Test 1: Static files load
+        try {
+            const html = await fetch('/static/index.html');
+            if (html.ok) log('Static HTML loads', 'pass');
+            else log(`Static HTML failed: ${html.status}`, 'fail');
+        } catch(e) { log(`Static HTML error: ${e.message}`, 'fail'); }
+
+        // Test 2: CSS loads
+        try {
+            const css = await fetch('/static/css/styles.css');
+            if (css.ok) log('CSS loads', 'pass');
+            else log(`CSS failed: ${css.status}`, 'fail');
+        } catch(e) { log(`CSS error: ${e.message}`, 'fail'); }
+
+        // Test 3: JS modules load
+        try {
+            const js = await fetch('/static/js/app.js');
+            if (js.ok) log('app.js loads', 'pass');
+            else log(`app.js failed: ${js.status}`, 'fail');
+        } catch(e) { log(`app.js error: ${e.message}`, 'fail'); }
+
+        // Test 4: lightweight-charts loads
+        try {
+            const charts = await fetch('/static/js/lightweight-charts.min.js');
+            if (charts.ok) log('lightweight-charts.min.js loads', 'pass');
+            else log(`lightweight-charts.min.js failed: ${charts.status}`, 'fail');
+        } catch(e) { log(`lightweight-charts.min.js error: ${e.message}`, 'fail'); }
+
+        // Test 5: API health
+        try {
+            const health = await fetch('/api/health');
+            const data = await health.json();
+            log(`API health: ${JSON.stringify(data)}`, 'pass');
+        } catch(e) { log(`API health error: ${e.message}`, 'fail'); }
+
+        // Test 6: Kline API
+        try {
+            const kline = await fetch('/api/kline/BTCUSDT?timeframe=1h&limit=5');
+            if (kline.ok) {
+                const data = await kline.json();
+                log(`Kline API: ${data.candles?.length || 0} candles for ${data.symbol}`, 'pass');
+            } else {
+                const data = await kline.json();
+                log(`Kline API failed: ${JSON.stringify(data)}`, 'fail');
+            }
+        } catch(e) { log(`Kline API error: ${e.message}`, 'fail'); }
+
+        // Test 7: Portfolio API
+        try {
+            const portfolio = await fetch('/api/portfolio');
+            if (portfolio.ok) log('Portfolio API loads', 'pass');
+            else log(`Portfolio API failed: ${portfolio.status}`, 'fail');
+        } catch(e) { log(`Portfolio API error: ${e.message}`, 'fail'); }
+
+        // Test 8: Exchanges API
+        try {
+            const ex = await fetch('/api/exchanges');
+            if (ex.ok) {
+                const data = await ex.json();
+                log(`Exchanges API: ${data.exchanges?.length} exchanges`, 'pass');
+            } else {
+                log(`Exchanges API failed: ${ex.status}`, 'fail');
+            }
+        } catch(e) { log(`Exchanges API error: ${e.message}`, 'fail'); }
+
+        // Test 9: SSE stream
+        try {
+            const es = new EventSource('/api/market-data/stream');
+            es.onopen = () => log('SSE stream opened', 'pass');
+            es.onerror = () => log('SSE stream error (may be normal)', 'fail');
+            setTimeout(() => es.close(), 2000);
+        } catch(e) { log(`SSE error: ${e.message}`, 'fail'); }
+    }
+
+    runTests();
+    </script>
+</body>
+</html>

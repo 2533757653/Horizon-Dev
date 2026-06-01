@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>LightweightCharts Debug</title>
+</head>
+<body>
+    <h1>LightweightCharts API Debug</h1>
+    <pre id="output"></pre>
+    <script src="/static/js/lightweight-charts.min.js?v=20260602"></script>
+    <script>
+    const out = document.getElementById('output');
+    function log(msg) {
+        out.textContent += msg + '\n';
+        console.log(msg);
+    }
+    log('CrosshairMode object keys:');
+    Object.keys(LightweightCharts.CrosshairMode).forEach(k => {
+        log(`  ${k}: ${LightweightCharts.CrosshairMode[k]}`);
+    });
+    log('\nCandlestickSeries keys:');
+    Object.keys(LightweightCharts.CandlestickSeries).forEach(k => {
+        log(`  ${k}: ${LightweightCharts.CandlestickSeries[k]}`);
+    });
+
+    // Test creating a chart
+    log('\n--- Creating test chart ---');
+    const container = document.createElement('div');
+    container.style.width = '400px';
+    container.style.height = '200px';
+    document.body.appendChild(container);
+
+    try {
+        const chart = LightweightCharts.createChart(container, {
+            layout: { background: { color: '#13132b' }, textColor: '#8888aa' },
+            crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
+        });
+        log('createChart succeeded');
+
+        // Try addSeries with CandlestickSeries
+        const series = chart.addSeries(LightweightCharts.CandlestickSeries, {
+            upColor: '#4ade80',
+            downColor: '#f87171'
+        });
+        log('addSeries(CandlestickSeries, options) succeeded');
+        log('series type: ' + series.seriesType());
+
+        // Set some test data
+        series.setData([{ time: 1780304400, open: 72902.84, high: 73096.14, low: 72786.49, close: 72877.7 }]);
+        log('setData succeeded');
+        log('\nALL TESTS PASSED');
+    } catch(e) {
+        log('ERROR: ' + e.message);
+        log(e.stack);
+    }
+    </script>
+</body>
+</html>

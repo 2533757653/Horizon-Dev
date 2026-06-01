@@ -4,34 +4,124 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Horizon Trading Platform</title>
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260601">
 </head>
 <body>
     <div class="header">
         <h1>Horizon Trading Platform</h1>
         <span class="status-dot" id="status-dot"></span>
         <span class="last-update" id="last-update"></span>
+
+        <!-- Guardrail Status Bar -->
+        <div class="guardrail-status-bar">
+            <div class="mode-section">
+                <span id="mode-badge" class="mode-badge mode-live">LIVE</span>
+                <button id="mode-toggle-btn" class="mode-toggle-btn" onclick="showModeToggleModal()">
+                    <span class="toggle-icon">⇄</span>
+                </button>
+            </div>
+            <div id="cooldown-badge" class="cooldown-badge hidden" onclick="showCooldownModal()">
+                <span class="cooldown-icon">⏱</span>
+                <span id="cooldown-count">0</span>
+            </div>
+            <div id="collaborative-countdown" class="collaborative-countdown hidden">
+                <span class="countdown-label">COLLABORATIVE expires in</span>
+                <span id="countdown-timer">--</span>
+            </div>
+        </div>
     </div>
+
+    <!-- Paper Mode Banner -->
+    <div id="paper-banner" class="paper-banner hidden">
+        <span class="paper-icon">📋</span>
+        <span class="paper-text">PAPER TRADING - No real funds at risk</span>
+    </div>
+
+    <!-- Collaborative Warning Banner -->
+    <div id="collab-banner" class="collab-banner hidden">
+        <span class="collab-icon">⚠</span>
+        <span class="collab-text">COLLABORATIVE MODE - Human review required for orders</span>
+    </div>
+
     <div class="dashboard">
-        <div class="panel chart-panel">
+        <div class="top-panels">
+            <!-- Guardrail Breach Log -->
+            <div class="panel guardrail-panel">
             <div class="panel-header">
-                <h2>Chart</h2>
-                <div class="chart-controls">
-                    <select id="symbol-select"><option value="BTC/USDT">BTC/USDT</option></select>
-                    <select id="timeframe-select">
-                        <option value="1m">1m</option><option value="5m">5m</option>
-                        <option value="15m">15m</option><option value="1h" selected>1h</option>
-                        <option value="4h">4h</option><option value="1d">1d</option>
-                    </select>
+                <h2>Guardrail Events</h2>
+                <span id="guardrail-count-badge" class="count-badge">0</span>
+            </div>
+            <div id="guardrail-events-container" class="guardrail-events-table">
+                <div class="table-header">
+                    <span class="col-time">Time</span>
+                    <span class="col-rule">Rule</span>
+                    <span class="col-action">Action</span>
+                    <span class="col-symbol">Symbol</span>
+                    <span class="col-details">Details</span>
+                </div>
+                <div id="guardrail-events-body"></div>
+            </div>
+        </div>
+
+        <!-- Paper Trading Performance Card -->
+        <div class="panel paper-performance-panel">
+            <div class="panel-header">
+                <h2>Paper Trading Performance</h2>
+                <div class="auto-execution-toggle">
+                    <span class="toggle-label">Auto-Execution</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="autonomy-toggle" onchange="toggleAutonomy(this.checked)">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span id="autonomy-status" class="autonomy-status">ON</span>
                 </div>
             </div>
-            <div id="chart-container"></div>
-            <div id="chart-status" class="panel-status"></div>
+            <div class="paper-stats-grid">
+                <div class="stat-card">
+                    <span class="stat-label">Total Realized P&L</span>
+                    <span id="realized-pnl" class="stat-value">$0.00</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Total Unrealized P&L</span>
+                    <span id="unrealized-pnl" class="stat-value">$0.00</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Open Positions</span>
+                    <span id="open-positions-count" class="stat-value">0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Total Trades</span>
+                    <span id="total-trades" class="stat-value">0</span>
+                </div>
+            </div>
+            <div class="paper-positions-table">
+                <div class="table-header">
+                    <span class="col-symbol">Symbol</span>
+                    <span class="col-side">Side</span>
+                    <span class="col-volume">Volume</span>
+                    <span class="col-entry">Avg Entry</span>
+                    <span class="col-price">Current Price</span>
+                    <span class="col-pnl">Unrealized P&L</span>
+                </div>
+                <div id="paper-positions-body"></div>
+            </div>
         </div>
+
         <div class="bottom-panels">
-            <div class="panel positions-panel">
-                <div class="panel-header"><h2>Positions</h2></div>
-                <div id="positions-container"></div>
+            <div class="panel chart-panel">
+                <div class="panel-header">
+                    <h2>Chart</h2>
+                    <div class="chart-controls">
+                        <select id="symbol-select"><option value="BTCUSDT">BTCUSDT</option></select>
+                        <select id="timeframe-select">
+                            <option value="1m">1m</option><option value="5m">5m</option>
+                            <option value="15m">15m</option><option value="1h" selected>1h</option>
+                            <option value="4h">4h</option><option value="1d">1d</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="chart-container"></div>
+                <div id="chart-status" class="panel-status"></div>
             </div>
             <div class="panel order-panel">
                 <div class="panel-header"><h2>Order Place</h2></div>
@@ -41,6 +131,6 @@
     </div>
     <div id="toast-container"></div>
     <div id="modal-overlay" class="modal-overlay hidden"></div>
-    <script type="module" src="/static/js/app.js"></script>
+    <script type="module" src="/static/js/app.js?v=20260601"></script>
 </body>
 </html>

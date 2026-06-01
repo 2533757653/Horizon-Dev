@@ -45,3 +45,36 @@ export async function cancelOrder(orderId) {
 export function createMarketStream() {
     return new EventSource('/api/market-data/stream');
 }
+
+// Guardrail APIs
+export async function getGuardrailStatus() {
+    return request('/guardrails/status');
+}
+
+export async function getGuardrailEvents() {
+    return request('/guardrails/events');
+}
+
+export async function getPaperSummary() {
+    return request('/paper/summary');
+}
+
+export async function getPaperPositions() {
+    return request('/paper/positions');
+}
+
+export async function postStrategyMode(mode) {
+    return request('/strategy/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+    });
+}
+
+export async function putStrategyConfig(config) {
+    return request('/strategy/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+    });
+}

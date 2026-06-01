@@ -12,15 +12,17 @@ export async function initKline(statusElement, containerElement) {
     containerEl = containerElement;
     setStatus('loading', 'Loading chart library...');
 
-    // Load lightweight-charts from CDN
-    await loadScript('https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js');
+    // Load lightweight-charts from local static files
+    await loadScript('/static/js/lightweight-charts.min.js?v=20260602');
 
     setStatus('loading', 'Initializing chart...');
 }
 
 function loadScript(src) {
     return new Promise((resolve, reject) => {
-        if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+        // Remove existing script tag to force reload with new version param
+        const existing = document.querySelector(`script[src^="${src.split('?')[0]}"]`);
+        if (existing) existing.remove();
         const s = document.createElement('script');
         s.src = src;
         s.onload = resolve;
@@ -74,7 +76,8 @@ export async function loadChart(symbol, timeframe = '1h') {
                     borderColor: '#2a2a4a',
                 },
             });
-            candleSeries = chart.addCandlestickSeries({
+            // lightweight-charts v5 API
+            candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
                 upColor: '#4ade80',
                 downColor: '#f87171',
                 borderUpColor: '#4ade80',
