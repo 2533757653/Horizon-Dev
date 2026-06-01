@@ -11,9 +11,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
-import anthropic
 import uvicorn
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
 from horizon.internal.config.settings import load_keys_from_file, settings
@@ -23,12 +21,9 @@ from horizon.internal.exchange.bitget import BitgetAdapter
 from horizon.internal.exchange.hyperliquid import HyperliquidAdapter
 from horizon.internal.exchange.htx import HTXAdapter
 from horizon.internal.exchange.registry import ExchangeRegistry
-from horizon.internal.indicators.calculator import TechnicalIndicatorCalculator
-from horizon.internal.llm.engine import LLMStrategyEngine
 from horizon.internal.marketdata.fetcher import MarketDataFetcher
 from horizon.internal.ordermanager.manager import OrderManager
 from horizon.internal.portfolio.tracker import PortfolioTracker
-from horizon.internal.proposals.queue import ProposalQueue
 
 
 def _setup_logging() -> None:
@@ -194,80 +189,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     application.state.order_manager = order_manager
     application.state.portfolio_tracker = portfolio_tracker
 
-    # 6. Setup LLM engine and scheduler
-    # Get LLM API key from settings or credentials
-    llm_api_key = settings.llm.api_key
-    if not llm_api_key:
-        creds = _load_exchange_credentials()
-        llm_api_key = creds.get("anthropic", {}).get("api_key", "")
-
-    anthropic_client = anthropic.Anthropic(api_key=llm_api_key)
-
-    # Load active strategy config from database
-    cursor = await db.execute(
-        "SELECT * FROM strategy_configs WHERE enabled = 1 LIMIT 1"
-    )
-    strategy_config_row = await cursor.fetchone()
-    if strategy_config_row:
-        strategy_config = dict(strategy_config_row)
-    else:
-        # Fallback to default config
-        strategy_config = {
-            "id": 1,
-            "name": "default_long_term",
-            "enabled": 1,
-            "model": settings.llm.model,
-            "analysis_interval_hours": settings.llm.analysis_interval_hours,
-            "system_prompt": "You are a quantitative trading analyst for Horizon.",
-            "asset_whitelist": '["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"]',
-            "max_position_pct": 20.0,
-            "max_daily_loss_pct": 5.0,
-            "min_confidence_threshold": 75,
-            "max_risk_tier": "low",
-        }
-
-    # Create proposal queue
-    proposal_queue = ProposalQueue(
-        db=db,
-        order_manager=order_manager,
-        strategy_config=strategy_config,
-    )
-
-    # Create indicator calculator
-    indicator_calculator = TechnicalIndicatorCalculator(db)
-
-    # Create LLM strategy engine
-    engine = LLMStrategyEngine(
-        db=db,
-        registry=registry,
-        proposal_queue=proposal_queue,
-        anthropic_client=anthropic_client,
-        strategy_config=strategy_config,
-        indicator_calculator=indicator_calculator,
-        fetcher=fetcher,
-    )
-
-    # Create and start APScheduler
-    scheduler = AsyncIOScheduler()
-    interval_hours = strategy_config.get("analysis_interval_hours",8)
-    scheduler.add_job(
-        engine.analyze_and_propose,
-        "interval",
-        hours=interval_hours,
-        id="llm_analysis",
-        replace_existing=True,
-    )
-    scheduler.start()
-    logger.info(
-        "LLM Strategy Engine scheduled to run every %d hours",
-        interval_hours,
-    )
-
-    # Store engine and scheduler in app state for access
-    application.state.engine = engine
-    application.state.scheduler = scheduler
-
-    # 7. Start background tasks
+    # 6. Start background tasks
     await fetcher.start()
     await portfolio_tracker.start()
     await order_manager.start_sync_loop()
@@ -279,11 +201,6 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     # ---- Shutdown ----
     logger.info("Stopping Horizon server...")
-
-    # Stop scheduler
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
-        logger.info("LLM scheduler stopped")
 
     # Stop fetcher
     await fetcher.stop()
@@ -393,26 +310,6 @@ def _create_app() -> FastAPI:
             db=db,
         )
 
-        # Create proposal queue
-        strategy_config = {
-            "id": 1,
-            "name": "default_long_term",
-            "enabled": 1,
-            "model": settings.llm.model,
-            "analysis_interval_hours": settings.llm.analysis_interval_hours,
-            "system_prompt": "You are a quantitative trading analyst for Horizon.",
-            "asset_whitelist": '["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"]',
-            "max_position_pct": 20.0,
-            "max_daily_loss_pct": 5.0,
-            "min_confidence_threshold": 75,
-            "max_risk_tier": "low",
-        }
-        proposal_queue = ProposalQueue(
-            db=db,
-            order_manager=order_manager,
-            strategy_config=strategy_config,
-        )
-
         # Call the web server's create_app - this returns an app with all endpoints
         application = _create_app_func(
             settings=settings,
@@ -421,7 +318,6 @@ def _create_app() -> FastAPI:
             fetcher=fetcher,
             order_manager=order_manager,
             portfolio_tracker=portfolio_tracker,
-            proposal_queue=proposal_queue,
         )
 
         # Override lifespan with our custom one for startup/shutdown
