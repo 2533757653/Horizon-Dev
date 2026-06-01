@@ -60,10 +60,10 @@ class OrderRequestModel(BaseModel):
     volume: float = Field(..., description="Order volume")
 
 
-class ActiveExchangesModel(BaseModel):
-    """Request model for setting active exchanges."""
+class ActiveExchangeModel(BaseModel):
+    """Request model for setting active exchange."""
 
-    exchanges: list[str] = Field(..., description="List of exchange names to activate")
+    exchange: str = Field(..., description="Exchange name to set as active")
 
 
 class ActivePairListModel(BaseModel):
@@ -133,33 +133,50 @@ def create_app(
     async def list_exchanges(request: Request) -> JSONResponse:
         """List all enabled exchanges and their active status."""
         registry: ExchangeRegistry = request.app.state.registry
-        active_exchanges = request.app.state.active_exchanges
+        settings: Settings = request.app.state.settings
+        active_exchange = settings.exchanges.active_exchange
         result = []
         for adapter in registry.list_all():
             result.append({
                 "name": adapter.name,
                 "enabled": adapter.enabled,
-                "active": adapter.name in active_exchanges,
+                "active": adapter.name == active_exchange,
             })
         return CustomJSONResponse(content={"exchanges": result})
 
     @app.post("/api/exchanges/active")
-    async def set_active_exchanges(request: Request, body: ActiveExchangesModel) -> JSONResponse:
-        """Set which exchanges are active for symbol fetching."""
+    async def set_active_exchange(request: Request, body: ActiveExchangeModel) -> JSONResponse:
+        """Set which exchange is active for all operations."""
         registry: ExchangeRegistry = request.app.state.registry
         enabled_names = {a.name for a in registry.list_enabled() if a.enabled}
 
-        invalid = [e for e in body.exchanges if e not in enabled_names]
-        if invalid:
+        if body.exchange not in enabled_names:
             raise HTTPException(
                 status_code=400,
-                detail=f"Exchanges not enabled: {invalid}. Enabled: {sorted(enabled_names)}"
+                detail=f"Exchange '{body.exchange}' not enabled. Enabled: {sorted(enabled_names)}"
             )
 
-        request.app.state.active_exchanges = set(body.exchanges)
+        # Update settings and all components
+        settings = request.app.state.settings
+        settings.exchanges.active_exchange = body.exchange
+
+        # Update fetcher
+        fetcher = request.app.state.fetcher
+        if hasattr(fetcher, '_active_exchange'):
+            fetcher._active_exchange = body.exchange
+
+        # Update portfolio tracker
+        portfolio = request.app.state.portfolio_tracker
+        if hasattr(portfolio, '_active_exchange'):
+            portfolio._active_exchange = body.exchange
+
+        # Update order manager
+        order_mgr = request.app.state.order_manager
+        if hasattr(order_mgr, '_active_exchange'):
+            order_mgr._active_exchange = body.exchange
+
         return CustomJSONResponse(content={
-            "active_exchanges": sorted(body.exchanges),
-            "count": len(body.exchanges),
+            "active_exchange": body.exchange,
         })
 
     # PairList endpoints
@@ -211,23 +228,23 @@ def create_app(
 
     @app.post("/api/pairlists/refresh-cache")
     async def refresh_symbol_cache(request: Request) -> JSONResponse:
-        """Force-refresh the exchange_symbols cache from all active exchanges."""
+        """Force-refresh the exchange_symbols cache from active exchange."""
         registry: ExchangeRegistry = request.app.state.registry
-        active_exchanges: set = request.app.state.active_exchanges
+        settings: Settings = request.app.state.settings
+        active_exchange = settings.exchanges.active_exchange
         cache: SymbolCache = request.app.state.symbol_cache
 
         async def refresh_task():
-            for exchange_name in active_exchanges:
-                adapter = registry.get(exchange_name)
-                if adapter:
-                    await cache.refresh_for_exchange(adapter)
+            adapter = registry.get(active_exchange)
+            if adapter:
+                await cache.refresh_for_exchange(adapter)
 
         asyncio.create_task(refresh_task())
 
         return CustomJSONResponse(content={
             "status": "started",
-            "message": f"Symbol cache refresh initiated for {len(active_exchanges)} exchange(s)",
-            "active_exchanges": sorted(active_exchanges),
+            "message": f"Symbol cache refresh initiated for exchange '{active_exchange}'",
+            "active_exchange": active_exchange,
         })
 
     # Portfolio endpoint
@@ -280,25 +297,22 @@ def create_app(
     ) -> JSONResponse:
         """Get historical OHLCV kline/candlestick data for a symbol."""
         registry: ExchangeRegistry = app.state.registry
-        active_exchanges: set = app.state.active_exchanges
+        settings: Settings = app.state.settings
+        active_exchange = settings.exchanges.active_exchange
 
-        candles = []
-        for exchange_name in active_exchanges:
-            adapter = registry.get(exchange_name)
-            if adapter and adapter.enabled:
-                try:
-                    klines = await adapter.fetch_klines(symbol, timeframe, limit)
-                    candles = klines
-                    break
-                except Exception:
-                    continue
+        adapter = registry.get(active_exchange)
+        if adapter is None or not adapter.enabled:
+            raise HTTPException(status_code=404, detail=f"Active exchange '{active_exchange}' not available")
 
-        if not candles:
-            raise HTTPException(status_code=404, detail=f"No kline data for {symbol}")
+        try:
+            candles = await adapter.fetch_klines(symbol, timeframe, limit)
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"No kline data for {symbol}: {str(e)}")
 
         return CustomJSONResponse(content={
             "symbol": symbol,
             "timeframe": timeframe,
+            "exchange": active_exchange,
             "candles": [
                 {
                     "time": c["time"],
