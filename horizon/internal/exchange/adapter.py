@@ -8,6 +8,7 @@ from .types import (
     Balance,
     OrderBook,
     OrderResult,
+    SymbolInfo,
     Ticker,
 )
 
@@ -174,6 +175,17 @@ class ExchangeAdapter(abc.ABC):
 
         Returns:
             OrderResult with order details.
+
+        Raises:
+            ExchangeError: If the request fails.
+        """
+        raise NotImplementedError
+
+    async def fetch_all_symbols(self) -> list[SymbolInfo]:
+        """Fetch all tradeable symbols from this exchange.
+
+        Returns:
+            List of SymbolInfo for all symbols the exchange lists.
 
         Raises:
             ExchangeError: If the request fails.
