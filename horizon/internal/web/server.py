@@ -15,8 +15,12 @@ from pydantic import BaseModel, Field
 
 from ..config.settings import Settings
 from ..exchange.registry import ExchangeRegistry
+from ..guardrails.evaluator import RiskGuardrailEvaluator, SystemMode
+from ..guardrails.cooldown_tracker import CooldownTracker
+from ..guardrails.rules import StrategyConfig
 from ..marketdata.fetcher import MarketDataFetcher
 from ..ordermanager.manager import OrderManager, OrderSubmissionError
+from ..paper.simulator import PaperTradingSimulator
 from ..portfolio.tracker import PortfolioTracker
 from ..datasource import KlineCache, DataSourceRegistry
 if TYPE_CHECKING:
@@ -81,6 +85,10 @@ def create_app(
     fetcher: MarketDataFetcher,
     order_manager: OrderManager,
     portfolio_tracker: PortfolioTracker,
+    guardrail_evaluator: RiskGuardrailEvaluator | None = None,
+    cooldown_tracker: CooldownTracker | None = None,
+    paper_simulator: PaperTradingSimulator | None = None,
+    strategy_config: StrategyConfig | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -91,6 +99,10 @@ def create_app(
         fetcher: Market data fetcher.
         order_manager: Order manager.
         portfolio_tracker: Portfolio tracker.
+        guardrail_evaluator: Optional guardrail evaluator.
+        cooldown_tracker: Optional cooldown tracker.
+        paper_simulator: Optional paper trading simulator.
+        strategy_config: Optional strategy config.
 
     Returns:
         Configured FastAPI application instance.
@@ -117,6 +129,10 @@ def create_app(
     app.state.fetcher = fetcher
     app.state.order_manager = order_manager
     app.state.portfolio_tracker = portfolio_tracker
+    app.state.guardrail_evaluator = guardrail_evaluator
+    app.state.cooldown_tracker = cooldown_tracker
+    app.state.paper_simulator = paper_simulator
+    app.state.strategy_config = strategy_config
 
     # Initialize kline cache and datasource
     kline_cache = KlineCache(
@@ -496,6 +512,229 @@ def create_app(
                         "updated_at_ms": 0,
                     }
             return CustomJSONResponse(content=[serialize_order(o) for o in orders])
+
+    # ---- Guardrail API Endpoints ----
+
+    @app.get("/api/guardrails/status")
+    async def get_guardrails_status(request: Request) -> JSONResponse:
+        """Get current guardrail system status.
+
+        Returns mode, cooldowns, downgrade_expires_at, and guardrail_events_today.
+        """
+        evaluator: RiskGuardrailEvaluator | None = request.app.state.guardrail_evaluator
+        cooldown_tracker: CooldownTracker | None = request.app.state.cooldown_tracker
+        db: aiosqlite.Connection = request.app.state.db
+
+        # Get current mode
+        if evaluator is not None:
+            mode = await evaluator.get_current_mode()
+            mode_value = mode.value
+        else:
+            mode_value = "unknown"
+
+        # Get cooldowns
+        cooldowns = []
+        if cooldown_tracker is not None:
+            cooldowns = await cooldown_tracker.get_all_cooldowns()
+
+        # Get today's guardrail events count
+        today_count = 0
+        if db is not None:
+            cursor = await db.execute(
+                """
+                SELECT COUNT(*) as count FROM guardrail_events
+                WHERE DATE(created_at) = DATE('now', 'utc')
+                """
+            )
+            row = await cursor.fetchone()
+            today_count = row["count"] if row else 0
+
+        # Get most recent downgrade_expires_at if any
+        downgrade_expires_at = None
+        if db is not None:
+            cursor = await db.execute(
+                """
+                SELECT downgrade_expires_at FROM guardrail_events
+                WHERE downgrade_active = 1
+                ORDER BY created_at DESC LIMIT 1
+                """
+            )
+            row = await cursor.fetchone()
+            if row and row["downgrade_expires_at"]:
+                downgrade_expires_at = row["downgrade_expires_at"]
+
+        return CustomJSONResponse(content={
+            "mode": mode_value,
+            "cooldowns": cooldowns,
+            "downgrade_expires_at": downgrade_expires_at,
+            "guardrail_events_today": today_count,
+        })
+
+    @app.get("/api/guardrails/events")
+    async def get_guardrail_events(
+        request: Request,
+        limit: int = Query(50, description="Maximum number of events to return"),
+        rule_name: str | None = Query(None, description="Filter by rule name"),
+    ) -> JSONResponse:
+        """Get guardrail events with optional filtering.
+
+        Args:
+            limit: Maximum number of events to return (default 50).
+            rule_name: Optional rule name filter.
+        """
+        db: aiosqlite.Connection = request.app.state.db
+
+        query = "SELECT * FROM guardrail_events WHERE 1=1"
+        params = []
+
+        if rule_name is not None:
+            query += " AND rule_name = ?"
+            params.append(rule_name)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+
+        events = []
+        for row in rows:
+            events.append({
+                "id": row["id"],
+                "order_id": row["order_id"],
+                "proposal_id": row["proposal_id"],
+                "rule_name": row["rule_name"],
+                "action_taken": row["action_taken"],
+                "request_symbol": row["request_symbol"],
+                "request_exchange": row["request_exchange"],
+                "request_side": row["request_side"],
+                "request_volume": row["request_volume"],
+                "request_price": row["request_price"],
+                "current_value": row["current_value"],
+                "threshold_value": row["threshold_value"],
+                "downgrade_active": bool(row["downgrade_active"]),
+                "downgrade_expires_at": row["downgrade_expires_at"],
+                "created_at": row["created_at"],
+            })
+
+        return CustomJSONResponse(content={"events": events, "count": len(events)})
+
+    @app.get("/api/guardrails/cooldowns")
+    async def get_guardrail_cooldowns(request: Request) -> JSONResponse:
+        """Get all active cooldowns with remaining seconds.
+
+        Returns cooldown list with remaining seconds computed.
+        """
+        cooldown_tracker: CooldownTracker | None = request.app.state.cooldown_tracker
+
+        if cooldown_tracker is None:
+            return CustomJSONResponse(content={"cooldowns": []})
+
+        cooldowns = await cooldown_tracker.get_all_cooldowns()
+        return CustomJSONResponse(content={"cooldowns": cooldowns})
+
+    # ---- Paper Trading API Endpoints ----
+
+    @app.get("/api/paper/positions")
+    async def get_paper_positions(request: Request) -> JSONResponse:
+        """Get all paper trading positions with unrealized P&L.
+
+        Returns positions list with unrealized P&L computed.
+        """
+        simulator: PaperTradingSimulator | None = request.app.state.paper_simulator
+
+        if simulator is None:
+            return CustomJSONResponse(content={"positions": []})
+
+        positions = await simulator.get_paper_positions()
+        return CustomJSONResponse(content={"positions": positions})
+
+    @app.get("/api/paper/trades")
+    async def get_paper_trades(
+        request: Request,
+        limit: int = Query(100, description="Maximum number of trades to return"),
+    ) -> JSONResponse:
+        """Get paper trading trades history.
+
+        Args:
+            limit: Maximum number of trades to return (default 100).
+        """
+        db: aiosqlite.Connection = request.app.state.db
+
+        cursor = await db.execute(
+            """
+            SELECT id, proposal_id, exchange, symbol, side, order_type,
+                   price, volume, notional_value, status, filled_at,
+                   paper_pnl, closed_by_side, closed_at, created_at
+            FROM paper_trades
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+
+        trades = []
+        for row in rows:
+            trades.append({
+                "id": row["id"],
+                "proposal_id": row["proposal_id"],
+                "exchange": row["exchange"],
+                "symbol": row["symbol"],
+                "side": row["side"],
+                "order_type": row["order_type"],
+                "price": row["price"],
+                "volume": row["volume"],
+                "notional_value": row["notional_value"],
+                "status": row["status"],
+                "filled_at": row["filled_at"],
+                "paper_pnl": row["paper_pnl"],
+                "closed_by_side": row["closed_by_side"],
+                "closed_at": row["closed_at"],
+                "created_at": row["created_at"],
+            })
+
+        return CustomJSONResponse(content={"trades": trades, "count": len(trades)})
+
+    @app.get("/api/paper/summary")
+    async def get_paper_summary(request: Request) -> JSONResponse:
+        """Get paper trading summary.
+
+        Returns total_realized_pnl, total_unrealized_pnl, open_positions,
+        total_trades, and daily_pnl.
+        """
+        simulator: PaperTradingSimulator | None = request.app.state.paper_simulator
+        db: aiosqlite.Connection = request.app.state.db
+
+        if simulator is not None:
+            pnl_summary = await simulator.get_paper_pnl_summary()
+            total_realized_pnl = pnl_summary.get("total_realized_pnl", 0.0)
+            total_unrealized_pnl = pnl_summary.get("total_unrealized_pnl", 0.0)
+            open_positions = pnl_summary.get("open_positions_count", 0)
+            total_trades = pnl_summary.get("trades_count", 0)
+        else:
+            total_realized_pnl = 0.0
+            total_unrealized_pnl = 0.0
+            open_positions = 0
+            total_trades = 0
+
+        # Get today's daily P&L
+        daily_pnl = 0.0
+        if db is not None:
+            cursor = await db.execute(
+                "SELECT realized_pnl, paper_pnl FROM daily_pnl WHERE date = DATE('now', 'utc')"
+            )
+            row = await cursor.fetchone()
+            if row:
+                daily_pnl = (row["realized_pnl"] or 0.0) + (row["paper_pnl"] or 0.0)
+
+        return CustomJSONResponse(content={
+            "total_realized_pnl": total_realized_pnl,
+            "total_unrealized_pnl": total_unrealized_pnl,
+            "open_positions": open_positions,
+            "total_trades": total_trades,
+            "daily_pnl": daily_pnl,
+        })
 
     # Serve static HTML page
     @app.get("/")
