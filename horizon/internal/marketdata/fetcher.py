@@ -24,6 +24,7 @@ class MarketDataFetcher:
         registry: ExchangeRegistry,
         db: aiosqlite.Connection,
         active_pairlist: "PairList",
+        active_exchange: str,
         poll_interval_seconds: int = 10,
     ) -> None:
         """Initialize the market data fetcher.
@@ -32,11 +33,13 @@ class MarketDataFetcher:
             registry: Exchange registry for accessing adapters.
             db: Database connection for PairList access.
             active_pairlist: PairList instance to get symbols from.
+            active_exchange: Name of the active exchange to use.
             poll_interval_seconds: Interval between polling cycles.
         """
         self._registry = registry
         self._db = db
         self._active_pairlist = active_pairlist
+        self._active_exchange = active_exchange
         self._symbols: list[str] = []
         self._poll_interval = poll_interval_seconds
         self._tickers: dict[str, dict[str, Ticker]] = {}
@@ -93,54 +96,47 @@ class MarketDataFetcher:
             await asyncio.sleep(self._poll_interval)
 
     async def _fetch_symbol(self, symbol: str) -> None:
-        """Fetch ticker and orderbook for a symbol from all enabled exchanges.
+        """Fetch ticker and orderbook for a symbol from the active exchange.
 
         Args:
             symbol: Trading pair symbol (e.g., 'BTC/USDT').
         """
-        enabled = self._registry.list_enabled()
+        active_adapter = self._registry.get_active_adapter(self._active_exchange)
+        if active_adapter is None:
+            logger.warning(
+                "No active adapter for exchange '%s' - skipping fetch for %s",
+                self._active_exchange,
+                symbol,
+            )
+            return
 
-        async def fetch_with_error_handling(adapter, fetch_fn, *args, **kwargs):
+        async def fetch_with_error_handling(fetch_fn, *args, **kwargs):
             try:
                 return await fetch_fn(*args, **kwargs)
             except Exception as e:
                 logger.warning(
                     "Failed to fetch %s from %s: %s",
                     symbol,
-                    adapter.name,
+                    active_adapter.name,
                     e,
                 )
                 return None
 
-        ticker_results = await asyncio.gather(
-            *[
-                fetch_with_error_handling(adapter, adapter.fetch_ticker, symbol)
-                for adapter in enabled
-            ],
-            return_exceptions=True,
+        # Fetch ticker
+        ticker = await fetch_with_error_handling(
+            active_adapter.fetch_ticker, symbol
         )
 
-        orderbook_results = await asyncio.gather(
-            *[
-                fetch_with_error_handling(adapter, adapter.fetch_orderbook, symbol, 5)
-                for adapter in enabled
-            ],
-            return_exceptions=True,
-        )
-
-        for i, ticker in enumerate(ticker_results):
-            if ticker is None or isinstance(ticker, Exception):
-                continue
-            adapter = enabled[i]
+        if ticker is not None:
             async with self._lock:
                 if symbol not in self._tickers:
                     self._tickers[symbol] = {}
-                self._tickers[symbol][adapter.name] = ticker
+                self._tickers[symbol][active_adapter.name] = ticker
 
             await self._broadcast({
                 "type": "ticker",
                 "symbol": symbol,
-                "exchange": adapter.name,
+                "exchange": active_adapter.name,
                 "data": {
                     "symbol": ticker.symbol,
                     "price": str(ticker.price),
@@ -150,14 +146,16 @@ class MarketDataFetcher:
                 },
             })
 
-        for i, orderbook in enumerate(orderbook_results):
-            if orderbook is None or isinstance(orderbook, Exception):
-                continue
-            adapter = enabled[i]
+        # Fetch orderbook
+        orderbook = await fetch_with_error_handling(
+            active_adapter.fetch_orderbook, symbol, 5
+        )
+
+        if orderbook is not None:
             async with self._lock:
                 if symbol not in self._orderbooks:
                     self._orderbooks[symbol] = {}
-                self._orderbooks[symbol][adapter.name] = orderbook
+                self._orderbooks[symbol][active_adapter.name] = orderbook
 
     async def _broadcast(self, message: dict) -> None:
         """Broadcast a message to all subscribers.
