@@ -24,6 +24,7 @@ from horizon.internal.exchange.registry import ExchangeRegistry
 from horizon.internal.marketdata.fetcher import MarketDataFetcher
 from horizon.internal.ordermanager.manager import OrderManager
 from horizon.internal.pairlist import PairListRegistry, SymbolCache
+from horizon.internal.pairlist.base import PairList
 from horizon.internal.portfolio.tracker import PortfolioTracker
 
 
