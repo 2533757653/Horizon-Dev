@@ -161,7 +161,8 @@ class CooldownRule(GuardrailRule):
             return True, {"current_value": None, "threshold_value": None}
 
         passed = not await cooldown_tracker.is_in_cooldown(request.exchange, request.symbol)
-        threshold_seconds = context.get("strategy_config").cooldown_seconds if context.get("strategy_config") else 300
+        strategy_config = context.get("strategy_config")
+        threshold_seconds = strategy_config.cooldown_seconds if strategy_config else 300
 
         return passed, {
             "current_value": "in_cooldown" if not passed else "ok",
@@ -249,6 +250,9 @@ class PositionSizeRule(GuardrailRule):
             return True, {"current_value": None, "threshold_value": None}
 
         # Calculate position USDT for this symbol on this exchange
+        # NOTE: position_usdt assumes balances are already normalized to USDT terms
+        # (i.e., this rule does not convert non-USDT assets to USDT values).
+        # This is an existing limitation - see code quality review.
         exchange_balances = portfolio_snapshot.exchanges.get(request.exchange, [])
         position_usdt = Decimal("0")
         for balance in exchange_balances:
