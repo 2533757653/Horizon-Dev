@@ -117,24 +117,31 @@ class HyperliquidAdapter(ExchangeAdapter):
         data = response.get("response", {}) if isinstance(response, dict) else response
 
         # Parse meta and asset contexts to find the requested symbol
-        # The data is a list: [meta, assetCtxs]
+        # The data is a list: [meta_data, assetCtxs_list]
         if not isinstance(data, list) or len(data) < 2:
             raise ExchangeError(f"Hyperliquid: unexpected response format for {symbol}")
 
-        asset_ctxs = data[1] if len(data) > 1 else []
+        meta_data = data[0] if isinstance(data[0], dict) else {}
+        asset_ctxs = data[1] if isinstance(data[1], list) else []
+
+        # Get universe (list of coin metadata) from meta_data
+        universe = meta_data.get("universe", []) if isinstance(meta_data, dict) else []
 
         # Find the coin name from the symbol (strip / from symbol)
         coin = symbol.replace("/", "").replace("USDT", "").replace("USDC", "")
 
-        # Find matching asset context
-        ticker_data = None
-        for ctx in asset_ctxs:
-            if isinstance(ctx, dict) and ctx.get("coin") == coin:
-                ticker_data = ctx
+        # Find the index of this coin in the universe
+        coin_index = None
+        for i, asset in enumerate(universe):
+            if isinstance(asset, dict) and asset.get("name") == coin:
+                coin_index = i
                 break
 
-        if ticker_data is None:
+        if coin_index is None or coin_index >= len(asset_ctxs):
             raise ExchangeError(f"Hyperliquid: no ticker data found for {symbol}")
+
+        # AssetCtxs entries are positional - same index as universe
+        ticker_data = asset_ctxs[coin_index] if isinstance(asset_ctxs[coin_index], dict) else {}
 
         # Extract mark price and 24h volume
         mark_price = Decimal(str(ticker_data.get("markPx", "0")))
@@ -415,12 +422,15 @@ class HyperliquidAdapter(ExchangeAdapter):
             universe = []
             asset_ctxs = []
 
-        # Build a volume lookup by coin name
+        # Build a volume lookup by coin name - assetCtxs are positional (same index as universe)
         volume_by_coin: dict[str, Decimal] = {}
-        for ctx in asset_ctxs:
-            name = ctx.get("name", "")
-            vol_str = ctx.get("dayNtlVlm", "0")
-            if name and vol_str:
+        for i, ctx in enumerate(asset_ctxs):
+            if i < len(universe) and isinstance(universe[i], dict):
+                name = universe[i].get("name", "")
+            else:
+                name = ""
+            vol_str = ctx.get("dayNtlVlm", "0") if isinstance(ctx, dict) else "0"
+            if name:
                 try:
                     volume_by_coin[name] = Decimal(vol_str)
                 except Exception:
