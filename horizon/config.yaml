@@ -36,12 +36,13 @@ trading:
   order_sync_interval_seconds: 30
 
 database:
-  path: "./data/horizon.db"
+  db_path: "./data/horizon.db"
 
 llm:
-  enabled: false
-  api_key: ""
-  model: "claude-3-5-sonnet-20241022"
+  enabled: true
+  api_key: "2c7854c6efedad70c15c7465ea98792c.0T9ErCDDXN5STMjF"
+  base_url: "https://open.bigmodel.cn/api/anthropic"
+  model: "glm-4.7"
   analysis_interval_hours: 8
 
 market_data:

@@ -394,13 +394,26 @@ class HyperliquidAdapter(ExchangeAdapter):
             ExchangeError: If the request fails.
         """
         # Get meta (symbol names) and assetCtxs (volumes) in one call
+        # Response is a list: [meta_data, asset_ctxs_data]
         response = await self._request(
             payload={"type": "metaAndAssetCtxs"},
         )
 
-        meta_and_ctx = response.get("metaAndAssetCtxs", {})
-        universe = meta_and_ctx.get("universe", [])
-        asset_ctxs = meta_and_ctx.get("assetCtxs", [])
+        # Parse the list response
+        if isinstance(response, list) and len(response) >= 1:
+            meta_data = response[0] if isinstance(response[0], dict) else {}
+            asset_ctxs_raw = response[1] if len(response) > 1 else {}
+            universe = meta_data.get("universe", []) if isinstance(meta_data, dict) else []
+            # assetCtxs might be in assetCtxs key or be the raw dict
+            if isinstance(asset_ctxs_raw, dict):
+                asset_ctxs = asset_ctxs_raw.get("assetCtxs", [])
+            elif isinstance(asset_ctxs_raw, list):
+                asset_ctxs = asset_ctxs_raw
+            else:
+                asset_ctxs = []
+        else:
+            universe = []
+            asset_ctxs = []
 
         # Build a volume lookup by coin name
         volume_by_coin: dict[str, Decimal] = {}

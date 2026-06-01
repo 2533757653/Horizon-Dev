@@ -100,8 +100,8 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     # 1. Database initialization with migrations
     migrations_dir = os.path.join(os.path.dirname(__file__), "internal", "database", "migrations")
-    db = await init_db(settings.database.path, migrations_dir)
-    logger.info("Database initialized at %s", settings.database.path)
+    db = await init_db(settings.database.db_path, migrations_dir)
+    logger.info("Database initialized at %s", settings.database.db_path)
 
     # 2. Exchange registry setup
     registry = ExchangeRegistry()
@@ -162,10 +162,19 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Active exchanges: %s", sorted(active_exchanges))
 
     # 2d. Refresh symbol cache for all active exchanges on startup
+    # Use a timeout per exchange to prevent one slow API from blocking startup
     for exchange_name in active_exchanges:
         adapter = registry.get(exchange_name)
         if adapter:
-            await symbol_cache.refresh_for_exchange(adapter)
+            try:
+                await asyncio.wait_for(
+                    symbol_cache.refresh_for_exchange(adapter),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Symbol cache refresh timed out for %s", exchange_name)
+            except Exception as e:
+                logger.warning("Symbol cache refresh failed for %s: %s", exchange_name, e)
     logger.info("Symbol cache populated from %d exchange(s)", len(active_exchanges))
 
     # 2e. Set default active PairList (first discovered)
@@ -256,7 +265,7 @@ def _create_app() -> FastAPI:
         from horizon.internal.web.server import create_app as _create_app_func
 
         # Create database directory if needed
-        db_path = settings.database.path
+        db_path = settings.database.db_path
         parent_dir = os.path.dirname(db_path)
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)

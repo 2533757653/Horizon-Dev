@@ -65,19 +65,21 @@ class TradingSettings(BaseSettings):
 
 class DatabaseSettings(BaseSettings):
     """Database configuration."""
-    path: str = "./data/horizon.db"
+    db_path: str = "./data/horizon.db"
 
 
 class LLMSettings(BaseSettings):
     """LLM configuration."""
     enabled: bool = False
     api_key: str = ""
+    base_url: str = ""
     model: str = "claude-3-5-sonnet-20241022"
     analysis_interval_hours: int = 8
 
 
 class MarketDataSettings(BaseSettings):
     """Market data configuration."""
+    symbols: list[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 
 
 def _load_yaml_config() -> Dict[str, Any]:
