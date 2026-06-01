@@ -191,3 +191,16 @@ class ExchangeAdapter(abc.ABC):
             ExchangeError: If the request fails.
         """
         raise NotImplementedError
+
+    async def fetch_klines(self, symbol: str, timeframe: str, limit: int) -> list[dict]:
+        """Fetch OHLCV kline/candlestick data for a symbol.
+
+        Args:
+            symbol: Trading symbol, e.g. 'BTC/USDT'
+            timeframe: Timeframe string: '1m', '5m', '15m', '1h', '4h', '1d'
+            limit: Maximum number of candles to return
+
+        Returns:
+            List of candle dicts with keys: time, open, high, low, close, volume (all as numbers/ints)
+        """
+        raise NotImplementedError(f"{self.name} does not support fetch_klines")

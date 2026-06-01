@@ -271,6 +271,47 @@ def create_app(
             ],
         })
 
+    # Kline endpoint for chart data
+    @app.get("/api/kline/{symbol}")
+    async def get_kline(
+        symbol: str,
+        timeframe: str = Query("1h", description="Timeframe: 1m, 5m, 15m, 1h, 4h, 1d"),
+        limit: int = Query(500, description="Max candles to return"),
+    ) -> JSONResponse:
+        """Get historical OHLCV kline/candlestick data for a symbol."""
+        registry: ExchangeRegistry = app.state.registry
+        active_exchanges: set = app.state.active_exchanges
+
+        candles = []
+        for exchange_name in active_exchanges:
+            adapter = registry.get(exchange_name)
+            if adapter and adapter.enabled:
+                try:
+                    klines = await adapter.fetch_klines(symbol, timeframe, limit)
+                    candles = klines
+                    break
+                except Exception:
+                    continue
+
+        if not candles:
+            raise HTTPException(status_code=404, detail=f"No kline data for {symbol}")
+
+        return CustomJSONResponse(content={
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "candles": [
+                {
+                    "time": c["time"],
+                    "open": str(c["open"]),
+                    "high": str(c["high"]),
+                    "low": str(c["low"]),
+                    "close": str(c["close"]),
+                    "volume": str(c["volume"]),
+                }
+                for c in candles
+            ],
+        })
+
     # SSE endpoint for market data streaming
     @app.get("/api/market-data/stream")
     async def market_data_stream(request: Request) -> StreamingResponse:

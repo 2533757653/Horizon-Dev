@@ -499,3 +499,37 @@ class BinanceAdapter(ExchangeAdapter):
     async def close(self) -> None:
         """Close the adapter and release resources."""
         await self._close_session()
+
+    async def fetch_klines(self, symbol: str, timeframe: str = "1h", limit: int = 500) -> list[dict]:
+        """Fetch OHLCV kline data from Binance."""
+        # Map timeframe to Binance interval format
+        interval_map = {
+            "1m": "1m", "5m": "5m", "15m": "15m",
+            "1h": "1h", "4h": "4h", "1d": "1d"
+        }
+        interval = interval_map.get(timeframe, "1h")
+
+        # Convert symbol format: 'BTC/USDT' -> 'BTCUSDT'
+        binance_symbol = self._convert_symbol(symbol)
+
+        session = await self._get_session()
+        url = f"{self.BASE_URL}/api/v3/klines"
+        params = {"symbol": binance_symbol, "interval": interval, "limit": min(limit, 1000)}
+
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+
+        # Binance returns: [open_time, open, high, low, close, volume, close_time, ...]
+        # We need: time (unix seconds), open, high, low, close, volume
+        candles = []
+        for k in data:
+            candles.append({
+                "time": int(k[0] / 1000),  # convert ms to seconds
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            })
+        return candles
