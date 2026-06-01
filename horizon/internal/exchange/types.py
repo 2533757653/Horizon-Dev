@@ -60,3 +60,15 @@ class OrderResult:
     status: str
     created_at_ms: int
     updated_at_ms: int
+
+
+@dataclass(frozen=True)
+class SymbolInfo:
+    """Symbol information from an exchange's symbol listing API."""
+
+    exchange: str
+    symbol: str          # generic format, e.g. "BTC/USDT"
+    base_asset: str      # e.g. "BTC"
+    quote_asset: str     # e.g. "USDT"
+    volume_24h: Optional[Decimal]
+    price: Optional[Decimal]
