@@ -16,6 +16,7 @@ from .types import (
     OrderBook,
     OrderBookEntry,
     OrderResult,
+    SymbolInfo,
     Ticker,
 )
 
@@ -626,6 +627,42 @@ class HTXAdapter(ExchangeAdapter):
             created_at_ms=created_at,
             updated_at_ms=updated_at,
         )
+
+    async def fetch_all_symbols(self) -> list[SymbolInfo]:
+        """Fetch all tradeable symbols from HTX (Huobi).
+
+        Returns:
+            List of SymbolInfo for all online symbols.
+
+        Raises:
+            ExchangeError: If the request fails.
+        """
+        response = await self._request("GET", "/v1/common/symbols")
+
+        symbols = []
+        for sym in response.get("data", []):
+            if sym.get("status") != "online":
+                continue
+
+            base = sym.get("base-currency", "").upper()
+            quote = sym.get("quote-currency", "").upper()
+            exchange_symbol = sym.get("symbol", "")
+
+            # Generic format: uppercase BTC/USDT
+            generic_symbol = f"{base}/{quote}" if base and quote else exchange_symbol.upper()
+
+            symbols.append(
+                SymbolInfo(
+                    exchange=self.name,
+                    symbol=generic_symbol,
+                    base_asset=base,
+                    quote_asset=quote,
+                    volume_24h=None,
+                    price=None,
+                )
+            )
+
+        return symbols
 
     async def close(self) -> None:
         """Close the adapter and release resources."""
