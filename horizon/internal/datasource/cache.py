@@ -1,7 +1,6 @@
 """Kline cache with pickle persistence and lazy loading."""
 
 import logging
-import os
 import pickle
 import time
 from pathlib import Path
