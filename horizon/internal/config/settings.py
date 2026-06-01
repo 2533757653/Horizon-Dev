@@ -6,9 +6,7 @@ import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 from typing import Optional, Dict, Any
-import json
 import logging
-from pathlib import Path
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -130,24 +128,3 @@ def _create_settings_from_yaml() -> Settings:
         return Settings()
 
 settings = _create_settings_from_yaml()
-
-
-def load_keys_from_file(path: str) -> Dict[str, Any]:
-    """Load API keys from a JSON file."""
-    try:
-        file_path = Path(path)
-        if not file_path.exists():
-            logger.warning(f"Keys file not found: {path}")
-            return {}
-        content = file_path.read_text(encoding="utf-8")
-        keys = json.loads(content)
-        if not isinstance(keys, dict):
-            logger.warning(f"Keys file does not contain a valid object: {path}")
-            return {}
-        return keys
-    except json.JSONDecodeError as e:
-        logger.warning(f"Invalid JSON in keys file {path}: {e}")
-        return {}
-    except Exception as e:
-        logger.warning(f"Failed to load keys from {path}: {e}")
-        return {}

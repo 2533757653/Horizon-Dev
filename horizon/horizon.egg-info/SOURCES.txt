@@ -29,6 +29,7 @@ internal/web/server.py
 tests/test_indicators.py
 tests/test_llm_engine.py
 tests/test_llm_parser.py
+tests/test_pairlist_integration.py
 tests/test_prompt_builder.py
 tests/test_proposal_queue.py
 tests/test_web_server.py

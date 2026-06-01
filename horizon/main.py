@@ -14,7 +14,7 @@ from typing import Any, AsyncGenerator
 import uvicorn
 from fastapi import FastAPI
 
-from horizon.internal.config.settings import load_keys_from_file, settings
+from horizon.internal.config.settings import settings
 from horizon.internal.database.db import close_db, init_db
 from horizon.internal.exchange.binance import BinanceAdapter
 from horizon.internal.exchange.bitget import BitgetAdapter
@@ -37,15 +37,6 @@ def _setup_logging() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
-
-
-def _load_exchange_credentials() -> dict[str, Any]:
-    """Load exchange API credentials from key.txt file."""
-    try:
-        return load_keys_from_file("key.txt")
-    except Exception as e:
-        logging.warning("Failed to load keys from key.txt: %s", e)
-        return {}
 
 
 def _create_minimal_app() -> FastAPI:
@@ -114,15 +105,13 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     # 2. Exchange registry setup
     registry = ExchangeRegistry()
-    credentials = _load_exchange_credentials()
 
     # Register Binance if enabled
     binance_config = settings.exchanges.binance
     if binance_config.enabled:
-        creds = credentials.get("binance", {})
         adapter = BinanceAdapter(
-            api_key=creds.get("api_key", binance_config.api_key or ""),
-            api_secret=creds.get("secret", binance_config.api_secret or ""),
+            api_key=binance_config.api_key or "",
+            api_secret=binance_config.api_secret or "",
             recv_window_ms=binance_config.recv_window_ms,
         )
         registry.register(adapter)
@@ -131,10 +120,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     # Register HTX if enabled
     htx_config = settings.exchanges.htx
     if htx_config.enabled:
-        creds = credentials.get("htx", {})
         adapter = HTXAdapter(
-            api_key=creds.get("api_key", htx_config.api_key or ""),
-            api_secret=creds.get("secret", htx_config.api_secret or ""),
+            api_key=htx_config.api_key or "",
+            api_secret=htx_config.api_secret or "",
             recv_window_ms=htx_config.recv_window_ms,
         )
         registry.register(adapter)
@@ -143,10 +131,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     # Register Hyperliquid if enabled
     hyperliquid_config = settings.exchanges.hyperliquid
     if hyperliquid_config.enabled:
-        creds = credentials.get("hyperliquid", {})
         adapter = HyperliquidAdapter(
-            wallet_address=creds.get("wallet_address", hyperliquid_config.wallet_address or ""),
-            private_key=creds.get("private_key", hyperliquid_config.private_key or ""),
+            wallet_address=hyperliquid_config.wallet_address or "",
+            private_key=hyperliquid_config.private_key or "",
         )
         registry.register(adapter)
         logger.info("Hyperliquid adapter registered (enabled=%s)", adapter.enabled)
@@ -154,11 +141,10 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     # Register Bitget if enabled
     bitget_config = settings.exchanges.bitget
     if bitget_config.enabled:
-        creds = credentials.get("bitget", {})
         adapter = BitgetAdapter(
-            api_key=creds.get("key", bitget_config.api_key or ""),
-            api_secret=creds.get("secret", bitget_config.api_secret or ""),
-            passphrase=creds.get("password", bitget_config.passphrase or ""),
+            api_key=bitget_config.api_key or "",
+            api_secret=bitget_config.api_secret or "",
+            passphrase=bitget_config.passphrase or "",
         )
         registry.register(adapter)
         logger.info("Bitget adapter registered (enabled=%s)", adapter.enabled)
@@ -281,49 +267,40 @@ def _create_app() -> FastAPI:
 
         # Create registry and register adapters
         registry = ExchangeRegistry()
-        credentials = {}
-        try:
-            credentials = load_keys_from_file("key.txt")
-        except Exception:
-            pass
 
         # Register adapters
         binance_config = settings.exchanges.binance
         if binance_config.enabled:
-            creds = credentials.get("binance", {})
             adapter = BinanceAdapter(
-                api_key=creds.get("api_key", binance_config.api_key or ""),
-                api_secret=creds.get("secret", binance_config.api_secret or ""),
+                api_key=binance_config.api_key or "",
+                api_secret=binance_config.api_secret or "",
                 recv_window_ms=binance_config.recv_window_ms,
             )
             registry.register(adapter)
 
         htx_config = settings.exchanges.htx
         if htx_config.enabled:
-            creds = credentials.get("htx", {})
             adapter = HTXAdapter(
-                api_key=creds.get("api_key", htx_config.api_key or ""),
-                api_secret=creds.get("secret", htx_config.api_secret or ""),
+                api_key=htx_config.api_key or "",
+                api_secret=htx_config.api_secret or "",
                 recv_window_ms=htx_config.recv_window_ms,
             )
             registry.register(adapter)
 
         hyperliquid_config = settings.exchanges.hyperliquid
         if hyperliquid_config.enabled:
-            creds = credentials.get("hyperliquid", {})
             adapter = HyperliquidAdapter(
-                wallet_address=creds.get("wallet_address", hyperliquid_config.wallet_address or ""),
-                private_key=creds.get("private_key", hyperliquid_config.private_key or ""),
+                wallet_address=hyperliquid_config.wallet_address or "",
+                private_key=hyperliquid_config.private_key or "",
             )
             registry.register(adapter)
 
         bitget_config = settings.exchanges.bitget
         if bitget_config.enabled:
-            creds = credentials.get("bitget", {})
             adapter = BitgetAdapter(
-                api_key=creds.get("key", bitget_config.api_key or ""),
-                api_secret=creds.get("secret", bitget_config.api_secret or ""),
-                passphrase=creds.get("password", bitget_config.passphrase or ""),
+                api_key=bitget_config.api_key or "",
+                api_secret=bitget_config.api_secret or "",
+                passphrase=bitget_config.passphrase or "",
             )
             registry.register(adapter)
 
