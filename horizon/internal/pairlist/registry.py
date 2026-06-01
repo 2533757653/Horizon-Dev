@@ -3,10 +3,8 @@
 import logging
 import pkgutil
 import importlib
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .base import PairList
+from .base import PairList
 
 logger = logging.getLogger(__name__)
 

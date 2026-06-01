@@ -23,6 +23,7 @@ from horizon.internal.exchange.htx import HTXAdapter
 from horizon.internal.exchange.registry import ExchangeRegistry
 from horizon.internal.marketdata.fetcher import MarketDataFetcher
 from horizon.internal.ordermanager.manager import OrderManager
+from horizon.internal.pairlist import PairListRegistry, SymbolCache
 from horizon.internal.portfolio.tracker import PortfolioTracker
 
 
@@ -161,10 +162,40 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         registry.register(adapter)
         logger.info("Bitget adapter registered (enabled=%s)", adapter.enabled)
 
+    # 2a. Initialize PairList registry and discover plugins
+    pairlist_registry = PairListRegistry()
+    pairlist_registry.discover("horizon.pairlists")
+    logger.info("PairList plugins discovered: %s", [p["name"] for p in pairlist_registry.list_all()])
+
+    # 2b. Initialize symbol cache
+    symbol_cache = SymbolCache(db)
+
+    # 2c. Set initial active exchanges (all enabled exchanges)
+    active_exchanges = {adapter.name for adapter in registry.list_enabled() if adapter.enabled}
+    logger.info("Active exchanges: %s", sorted(active_exchanges))
+
+    # 2d. Refresh symbol cache for all active exchanges on startup
+    for exchange_name in active_exchanges:
+        adapter = registry.get(exchange_name)
+        if adapter:
+            await symbol_cache.refresh_for_exchange(adapter)
+    logger.info("Symbol cache populated from %d exchange(s)", len(active_exchanges))
+
+    # 2e. Set default active PairList (first discovered)
+    available = pairlist_registry.list_all()
+    if available:
+        default_pairlist_name = available[0]["name"]
+        active_pairlist = pairlist_registry.create(default_pairlist_name)
+        logger.info("Default PairList: %s", default_pairlist_name)
+    else:
+        active_pairlist = None
+        logger.warning("No PairList plugins found!")
+
     # 3. Market data fetcher setup
     fetcher = MarketDataFetcher(
         registry=registry,
-        symbols=settings.market_data.symbols,
+        db=db,
+        active_pairlist=active_pairlist,
         poll_interval_seconds=settings.trading.market_data_poll_interval_seconds,
     )
 
@@ -188,6 +219,10 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     application.state.fetcher = fetcher
     application.state.order_manager = order_manager
     application.state.portfolio_tracker = portfolio_tracker
+    application.state.pairlist_registry = pairlist_registry
+    application.state.active_pairlist = active_pairlist
+    application.state.active_exchanges = active_exchanges
+    application.state.symbol_cache = symbol_cache
 
     # 6. Start background tasks
     await fetcher.start()
@@ -292,9 +327,18 @@ def _create_app() -> FastAPI:
             registry.register(adapter)
 
         # Create components
+        pairlist_registry = PairListRegistry()
+        pairlist_registry.discover("horizon.pairlists")
+        symbol_cache = SymbolCache(db)
+        active_exchanges = {adapter.name for adapter in registry.list_enabled() if adapter.enabled}
+
+        available = pairlist_registry.list_all()
+        active_pairlist = pairlist_registry.create(available[0]["name"]) if available else None
+
         fetcher = MarketDataFetcher(
             registry=registry,
-            symbols=settings.market_data.symbols,
+            db=db,
+            active_pairlist=active_pairlist,
             poll_interval_seconds=settings.trading.market_data_poll_interval_seconds,
         )
 
