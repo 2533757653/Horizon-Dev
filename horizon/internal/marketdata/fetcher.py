@@ -3,12 +3,15 @@
 import asyncio
 import logging
 from decimal import Decimal
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import aiosqlite
 
 from ..exchange.registry import ExchangeRegistry
 from ..exchange.types import OrderBook, OrderBookEntry, Ticker
+
+if TYPE_CHECKING:
+    from ..pairlist.base import PairList
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +22,22 @@ class MarketDataFetcher:
     def __init__(
         self,
         registry: ExchangeRegistry,
-        symbols: list[str],
+        db: aiosqlite.Connection,
+        active_pairlist: "PairList",
         poll_interval_seconds: int = 10,
     ) -> None:
         """Initialize the market data fetcher.
 
         Args:
             registry: Exchange registry for accessing adapters.
-            symbols: List of trading pair symbols to monitor.
+            db: Database connection for PairList access.
+            active_pairlist: PairList instance to get symbols from.
             poll_interval_seconds: Interval between polling cycles.
         """
         self._registry = registry
-        self._symbols = symbols
+        self._db = db
+        self._active_pairlist = active_pairlist
+        self._symbols: list[str] = []
         self._poll_interval = poll_interval_seconds
         self._tickers: dict[str, dict[str, Ticker]] = {}
         self._orderbooks: dict[str, dict[str, OrderBook]] = {}
@@ -64,6 +71,20 @@ class MarketDataFetcher:
     async def _poll_loop(self) -> None:
         """Infinite polling loop that fetches data for all symbols."""
         while not self._stop_event.is_set():
+            # Refresh symbol list from active PairList
+            try:
+                new_symbols = await self._active_pairlist.get_pairs(self._db)
+            except Exception as e:
+                logger.warning("PairList.get_pairs() failed: %s", e)
+                new_symbols = []
+
+            if set(new_symbols) != set(self._symbols):
+                logger.info(
+                    "PairList '%s' symbol list updated: %d -> %d symbols",
+                    self._active_pairlist.name, len(self._symbols), len(new_symbols)
+                )
+                self._symbols = new_symbols
+
             for symbol in self._symbols:
                 if self._stop_event.is_set():
                     break
