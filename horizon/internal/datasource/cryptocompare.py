@@ -58,7 +58,7 @@ class CryptoCompareAdapter:
             List of candle dicts: [{time, open, high, low, close, volume}, ...]
         """
         # Convert symbol: 'BTC/USDT' -> base currency (e.g., 'BTC')
-        sym = symbol.replace("/", "").replace("USDT", "").replace("USDC", "")
+        sym = symbol.split("/")[0]
 
         # Map timeframe to CryptoCompare format
         timeframe_map = {
@@ -85,10 +85,10 @@ class CryptoCompareAdapter:
             "limit": limit,
         }
 
-        # Set aggregate based on timeframe
-        agg = interval[-1] if interval[-1].isdigit() else "1"
-        if interval != "D" and interval != "1":
-            params["aggregate"] = agg
+        # Only set aggregate for 5m and 15m (to get native candles)
+        # For 1h, 4h, 1d we want native timeframe, no aggregation needed
+        if timeframe in ("5m", "15m"):
+            params["aggregate"] = "1"
 
         if self._api_key:
             params["api_key"] = self._api_key
