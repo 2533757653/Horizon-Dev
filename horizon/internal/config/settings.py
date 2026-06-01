@@ -5,7 +5,7 @@ Uses Pydantic Settings with YAML and environment variable support.
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 import json
 import logging
 from pathlib import Path
@@ -80,7 +80,6 @@ class LLMSettings(BaseSettings):
 
 class MarketDataSettings(BaseSettings):
     """Market data configuration."""
-    symbols: List[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 
 
 def _load_yaml_config() -> Dict[str, Any]:
