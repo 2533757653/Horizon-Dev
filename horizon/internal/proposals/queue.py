@@ -355,7 +355,15 @@ class ProposalQueue:
                 logger.error(f"Error in expiry scanner: {e}")
 
     async def _scan_proposals(self) -> None:
-        """Scan all PROPOSED proposals and expire any that have expired."""
+        """Scan all PROPOSED proposals and process expiry and auto-execution.
+
+        For each PROPOSED proposal:
+        - Check time expiry (now > expires_at)
+        - Check price-drift expiry (abs(current-proposed)/proposed > threshold_pct/100)
+        - If expired, call _expire()
+        - Else if autonomy enabled AND confidence>=threshold AND risk_tier<=max:
+          attempt_auto_execution()
+        """
         cursor = await self._db.execute(
             "SELECT * FROM proposals WHERE status = ?",
             (ProposalStatus.PROPOSED.value,),
@@ -364,20 +372,46 @@ class ProposalQueue:
 
         total = len(rows)
         expired_count = 0
+        auto_executed_count = 0
+
+        # Get autonomy settings from strategy config
+        autonomy_enabled = self._strategy_config.get("autonomy_enabled", False)
+        min_confidence = self._strategy_config.get("min_confidence_threshold", 75)
+        max_risk_tier = self._strategy_config.get("max_risk_tier", "low")
+        risk_tier_order = {"low": 1, "medium": 2, "high": 3}
+        max_tier_value = risk_tier_order.get(max_risk_tier, 1)
 
         for row in rows:
             proposal = TradeProposal.from_row(row)
+
+            # Check time expiry
+            now = datetime.now(timezone.utc)
+            time_expired = now > proposal.expires_at
+
+            # Check price-drift expiry
             current_price = await self._get_current_price(
                 proposal.symbol, proposal.exchange
             )
+            price_expired = False
             if current_price is not None:
-                if await self.check_expiry(
-                    proposal.id, Decimal(str(current_price))
-                ):
-                    expired_count += 1
+                price_expired = proposal.is_expired(Decimal(str(current_price)))
+
+            # Determine if proposal is expired (time or price drift)
+            if time_expired or price_expired:
+                await self._expire(proposal.id)
+                expired_count += 1
+                continue
+
+            # Attempt auto-execution for non-expired proposals
+            if autonomy_enabled and self._guardrail_evaluator is not None:
+                # Pre-filter by confidence and risk tier
+                request_tier_value = risk_tier_order.get(proposal.risk_tier, 3)
+                if proposal.confidence_score >= min_confidence and request_tier_value <= max_tier_value:
+                    if await self.attempt_auto_execution(proposal):
+                        auto_executed_count += 1
 
         if total > 0:
-            logger.info(f"Scanned {total} proposals, expired {expired_count}")
+            logger.info(f"Expiry scanner: {total} proposed, {expired_count} expired, {auto_executed_count} auto-executed")
 
     async def stop_expiry_scanner(self) -> None:
         """Stop the expiry scanner task."""

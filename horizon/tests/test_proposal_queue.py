@@ -950,6 +950,165 @@ class TestAutoExecution:
         row = await cursor.fetchone()
         assert row["status"] == ProposalStatus.PROPOSED.value
 
+    @pytest.mark.asyncio
+    async def test_scan_proposals_expires_time_expired(
+        self, proposal_queue, sample_proposal, db
+    ):
+        """Test _scan_proposals expires time-expired proposals."""
+        # Set expires_at to past
+        sample_proposal.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        await proposal_queue.enqueue(sample_proposal)
+
+        await proposal_queue._scan_proposals()
+
+        # Verify status was updated to EXPIRED
+        cursor = await db.execute(
+            "SELECT status FROM proposals WHERE id = ?",
+            (sample_proposal.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.EXPIRED.value
+
+    @pytest.mark.asyncio
+    async def test_scan_proposals_expires_price_drift_expired(
+        self, proposal_queue, sample_proposal, db
+    ):
+        """Test _scan_proposals expires proposals with excessive price drift."""
+        # proposed_price = 95000, price_drift_threshold_pct = 3.0
+        # Set current price to cause > 3% drift
+        mock_adapter = MagicMock()
+        mock_adapter.enabled = True
+        mock_adapter.fetch_ticker = AsyncMock(return_value=Ticker(
+            symbol="BTCUSDT",
+            price=Decimal("98000.0"),  # 3.16% drift > 3% threshold
+            volume_24h=Decimal("1000.0"),
+            exchange="binance",
+            timestamp_ms=0,
+        ))
+        proposal_queue._registry.get.return_value = mock_adapter
+
+        await proposal_queue.enqueue(sample_proposal)
+
+        await proposal_queue._scan_proposals()
+
+        # Verify status was updated to EXPIRED
+        cursor = await db.execute(
+            "SELECT status FROM proposals WHERE id = ?",
+            (sample_proposal.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.EXPIRED.value
+
+    @pytest.mark.asyncio
+    async def test_scan_proposals_auto_executes_valid_proposals(
+        self, proposal_queue, sample_proposal, db
+    ):
+        """Test _scan_proposals auto-executes valid non-expired proposals."""
+        # Ensure proposal is valid (not time-expired, within price drift)
+        mock_adapter = MagicMock()
+        mock_adapter.enabled = True
+        mock_adapter.fetch_ticker = AsyncMock(return_value=Ticker(
+            symbol="BTCUSDT",
+            price=Decimal("95500.0"),  # Within 3% drift of 95000
+            volume_24h=Decimal("1000.0"),
+            exchange="binance",
+            timestamp_ms=0,
+        ))
+        proposal_queue._registry.get.return_value = mock_adapter
+
+        # Enable autonomy
+        proposal_queue._strategy_config["autonomy_enabled"] = True
+
+        await proposal_queue.enqueue(sample_proposal)
+
+        await proposal_queue._scan_proposals()
+
+        # Verify status was updated to AUTO_EXECUTED
+        cursor = await db.execute(
+            "SELECT status FROM proposals WHERE id = ?",
+            (sample_proposal.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.AUTO_EXECUTED.value
+
+    @pytest.mark.asyncio
+    async def test_scan_proposals_keeps_non_qualifying_proposals(
+        self, proposal_queue, sample_proposal, db
+    ):
+        """Test _scan_proposals keeps proposals that don't meet auto-execution criteria."""
+        # Set confidence below threshold
+        sample_proposal.confidence_score = 50  # Below 75 threshold
+        mock_adapter = MagicMock()
+        mock_adapter.enabled = True
+        mock_adapter.fetch_ticker = AsyncMock(return_value=Ticker(
+            symbol="BTCUSDT",
+            price=Decimal("95500.0"),  # Within 3% drift
+            volume_24h=Decimal("1000.0"),
+            exchange="binance",
+            timestamp_ms=0,
+        ))
+        proposal_queue._registry.get.return_value = mock_adapter
+
+        # Enable autonomy
+        proposal_queue._strategy_config["autonomy_enabled"] = True
+
+        await proposal_queue.enqueue(sample_proposal)
+
+        await proposal_queue._scan_proposals()
+
+        # Verify status remains PROPOSED
+        cursor = await db.execute(
+            "SELECT status FROM proposals WHERE id = ?",
+            (sample_proposal.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.PROPOSED.value
+
+    @pytest.mark.asyncio
+    async def test_scan_proposals_multiple_proposals(
+        self, proposal_queue, sample_proposal, db
+    ):
+        """Test _scan_proposals processes multiple proposals correctly."""
+        import copy
+
+        # Create independent copies of sample_proposal
+        p1 = copy.copy(sample_proposal)
+        p1.id = str(uuid.uuid4())
+        p1.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+
+        p2 = copy.copy(sample_proposal)
+        p2.id = str(uuid.uuid4())
+        p2.confidence_score = 90
+
+        mock_adapter = MagicMock()
+        mock_adapter.enabled = True
+        mock_adapter.fetch_ticker = AsyncMock(return_value=Ticker(
+            symbol="BTCUSDT",
+            price=Decimal("95500.0"),  # Within 3% drift
+            volume_24h=Decimal("1000.0"),
+            exchange="binance",
+            timestamp_ms=0,
+        ))
+        proposal_queue._registry.get.return_value = mock_adapter
+
+        # Enable autonomy
+        proposal_queue._strategy_config["autonomy_enabled"] = True
+
+        await proposal_queue.enqueue(p1)
+        await proposal_queue.enqueue(p2)
+
+        await proposal_queue._scan_proposals()
+
+        # Verify p1 is expired, p2 is auto-executed
+        cursor = await db.execute(
+            "SELECT id, status FROM proposals ORDER BY created_at"
+        )
+        rows = await cursor.fetchall()
+
+        statuses = {row["id"]: row["status"] for row in rows}
+        assert statuses[p1.id] == ProposalStatus.EXPIRED.value
+        assert statuses[p2.id] == ProposalStatus.AUTO_EXECUTED.value
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
