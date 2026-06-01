@@ -78,6 +78,14 @@ class LLMSettings(BaseSettings):
     analysis_interval_hours: int = 8
 
 
+class DataSourceSettings(BaseSettings):
+    """Data source configuration for kline cache."""
+    cryptocompare_api_key: str = ""
+    cryptocompare_base_url: str = "https://min-api.cryptocompare.com"
+    cache_stale_seconds: int = 3600  # 1 hour
+    cache_file: str = "./data/kline_cache.pkl"
+
+
 class MarketDataSettings(BaseSettings):
     """Market data configuration."""
     symbols: list[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
@@ -102,6 +110,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     market_data: MarketDataSettings = Field(default_factory=MarketDataSettings)
+    datasource: DataSourceSettings = Field(default_factory=DataSourceSettings)
 
     @classmethod
     def from_yaml(cls, yaml_path: str = "config.yaml") -> "Settings":

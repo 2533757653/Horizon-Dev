@@ -46,6 +46,12 @@ llm:
   model: "glm-4.7"
   analysis_interval_hours: 8
 
+datasource:
+  cryptocompare_api_key: ""  # Optional, leave empty for free tier
+  cryptocompare_base_url: "https://min-api.cryptocompare.com"
+  cache_stale_seconds: 3600  # 1 hour
+  cache_file: "./data/kline_cache.pkl"
+
 market_data:
   symbols:
     - "BTCUSDT"
