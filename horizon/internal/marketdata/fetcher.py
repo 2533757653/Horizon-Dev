@@ -157,6 +157,17 @@ class MarketDataFetcher:
                     self._orderbooks[symbol] = {}
                 self._orderbooks[symbol][active_adapter.name] = orderbook
 
+            await self._broadcast({
+                "type": "orderbook",
+                "symbol": symbol,
+                "exchange": active_adapter.name,
+                "data": {
+                    "symbol": orderbook.symbol,
+                    "bids": [{"price": str(b.price), "size": str(b.size)} for b in orderbook.bids],
+                    "asks": [{"price": str(a.price), "size": str(a.size)} for a in orderbook.asks],
+                },
+            })
+
     async def _broadcast(self, message: dict) -> None:
         """Broadcast a message to all subscribers.
 
