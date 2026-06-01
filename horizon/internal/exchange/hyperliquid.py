@@ -13,6 +13,7 @@ from .types import (
     OrderBook,
     OrderBookEntry,
     OrderResult,
+    SymbolInfo,
     Ticker,
 )
 
@@ -379,6 +380,61 @@ class HyperliquidAdapter(ExchangeAdapter):
             created_at_ms=0,
             updated_at_ms=0,
         )
+
+    async def fetch_all_symbols(self) -> list[SymbolInfo]:
+        """Fetch all tradeable symbols from Hyperliquid (perpetuals).
+
+        Hyperliquid is a perpetuals DEX. All symbols are USDC-margined.
+        Coin names like "BTC", "ETH" map to generic "BTC/USDC", "ETH/USDC".
+
+        Returns:
+            List of SymbolInfo for all perpetuals.
+
+        Raises:
+            ExchangeError: If the request fails.
+        """
+        # Get meta (symbol names) and assetCtxs (volumes) in one call
+        response = await self._request(
+            payload={"type": "metaAndAssetCtxs"},
+        )
+
+        meta_and_ctx = response.get("metaAndAssetCtxs", {})
+        universe = meta_and_ctx.get("universe", [])
+        asset_ctxs = meta_and_ctx.get("assetCtxs", [])
+
+        # Build a volume lookup by coin name
+        volume_by_coin: dict[str, Decimal] = {}
+        for ctx in asset_ctxs:
+            name = ctx.get("name", "")
+            vol_str = ctx.get("dayNtlVlm", "0")
+            if name and vol_str:
+                try:
+                    volume_by_coin[name] = Decimal(vol_str)
+                except Exception:
+                    pass
+
+        symbols = []
+        for asset in universe:
+            coin = asset.get("name", "")
+            if not coin:
+                continue
+
+            # Hyperliquid perpetuals are always USDC-margined
+            generic_symbol = f"{coin}/USDC"
+            volume = volume_by_coin.get(coin)
+
+            symbols.append(
+                SymbolInfo(
+                    exchange=self.name,
+                    symbol=generic_symbol,
+                    base_asset=coin,
+                    quote_asset="USDC",
+                    volume_24h=volume,
+                    price=None,
+                )
+            )
+
+        return symbols
 
     async def place_market_order(
         self, symbol: str, side: str, volume: Decimal
