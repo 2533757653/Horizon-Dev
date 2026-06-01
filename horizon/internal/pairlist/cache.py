@@ -61,6 +61,27 @@ class SymbolCache:
         logger.info("Refreshed %d symbols from %s", len(symbols), adapter.name)
         return len(symbols)
 
+    async def refresh_active_exchange(self, adapter: "ExchangeAdapter") -> int:
+        """Refresh symbol cache from the active exchange only.
+
+        This replaces all symbols from other exchanges with only those from the active exchange.
+
+        Args:
+            adapter: The active exchange adapter to fetch from.
+
+        Returns:
+            Number of symbols inserted.
+        """
+        # First delete all symbols not from this exchange
+        await self._db.execute(
+            "DELETE FROM exchange_symbols WHERE exchange != ?",
+            (adapter.name,),
+        )
+        await self._db.commit()
+
+        # Then refresh from active exchange
+        return await self.refresh_for_exchange(adapter)
+
     async def get_all_pairs(self) -> list[str]:
         """Get all unique symbols from the cache (generic format)."""
         cursor = await self._db.execute(
