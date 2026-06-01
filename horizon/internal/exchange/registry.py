@@ -52,6 +52,20 @@ class ExchangeRegistry:
         """
         return [adapter for adapter in self._adapters.values() if adapter.enabled]
 
+    def get_active_adapter(self, active_exchange: str) -> Optional[ExchangeAdapter]:
+        """Get the adapter for the active exchange.
+
+        Args:
+            active_exchange: Name of the active exchange.
+
+        Returns:
+            The exchange adapter if found and enabled, None otherwise.
+        """
+        adapter = self._adapters.get(active_exchange)
+        if adapter is not None and adapter.enabled:
+            return adapter
+        return None
+
     async def get_all_tickers(self, symbol: str) -> list[Ticker]:
         """Fetch tickers for a symbol from all enabled exchanges.
 
