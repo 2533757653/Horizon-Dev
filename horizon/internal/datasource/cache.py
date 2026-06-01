@@ -16,7 +16,7 @@ class KlineCache:
     Data structure:
         _cache = {
             "BTC/USDT": {
-                "1h": [(timestamp, open, high, low, close, volume), ...],
+                "1h": [{time, open, high, low, close, volume}, ...],
                 "4h": [...],
             },
             "ETH/USDT": {...},
