@@ -175,6 +175,12 @@ def create_app(
         if hasattr(order_mgr, '_active_exchange'):
             order_mgr._active_exchange = body.exchange
 
+        # Trigger symbol cache refresh from new active exchange
+        cache = request.app.state.symbol_cache
+        adapter = registry.get(body.exchange)
+        if adapter:
+            asyncio.create_task(cache.refresh_active_exchange(adapter))
+
         return CustomJSONResponse(content={
             "active_exchange": body.exchange,
         })
