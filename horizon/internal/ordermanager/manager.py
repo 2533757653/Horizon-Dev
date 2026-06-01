@@ -320,71 +320,71 @@ class OrderManager:
                 pass
 
     async def _sync_open_orders(self) -> None:
-    """Sync open orders with exchange state for the active exchange only."""
-    async with self._lock:
-        active_adapter = self._registry.get_active_adapter(self._active_exchange)
-        if active_adapter is None:
-            return
+        """Sync open orders with exchange state for the active exchange only."""
+        async with self._lock:
+            active_adapter = self._registry.get_active_adapter(self._active_exchange)
+            if active_adapter is None:
+                return
 
-        # Collect orders for active exchange only
-        orders = [
-            order for order in self._open_orders.values()
-            if order.status in self.OPEN_STATUSES and order.exchange == self._active_exchange
-        ]
+            # Collect orders for active exchange only
+            orders = [
+                order for order in self._open_orders.values()
+                if order.status in self.OPEN_STATUSES and order.exchange == self._active_exchange
+            ]
 
-        if not orders:
-            return
+            if not orders:
+                return
 
-        try:
-            exchange_orders = await active_adapter.fetch_open_orders()
-            exchange_order_map = {o.exchange_order_id: o for o in exchange_orders}
+            try:
+                exchange_orders = await active_adapter.fetch_open_orders()
+                exchange_order_map = {o.exchange_order_id: o for o in exchange_orders}
 
-            for local_order in orders:
-                exchange_order = exchange_order_map.get(local_order.exchange_order_id)
+                for local_order in orders:
+                    exchange_order = exchange_order_map.get(local_order.exchange_order_id)
 
-                if exchange_order is None:
-                    if local_order.status in self.OPEN_STATUSES:
+                    if exchange_order is None:
+                        if local_order.status in self.OPEN_STATUSES:
+                            await self._db.execute(
+                                "UPDATE orders SET status = ?, updated_at = ? WHERE id = ?",
+                                ("filled", self._get_current_timestamp_ms(), local_order.order_id),
+                            )
+                            await self._db.commit()
+                            await self.record_event(
+                                local_order.order_id,
+                                "filled",
+                                {"reason": "order_not_found_on_exchange"}
+                            )
+                            del self._open_orders[local_order.order_id]
+                    else:
+                        if exchange_order.filled_volume > local_order.filled_volume:
+                            event_type = "partial_fill" if exchange_order.filled_volume < exchange_order.volume else "filled"
+                            await self.record_event(
+                                local_order.order_id,
+                                event_type,
+                                {
+                                    "filled_volume": str(exchange_order.filled_volume),
+                                    "status": exchange_order.status,
+                                }
+                            )
+
+                        self._open_orders[local_order.order_id] = exchange_order
                         await self._db.execute(
-                            "UPDATE orders SET status = ?, updated_at = ? WHERE id = ?",
-                            ("filled", self._get_current_timestamp_ms(), local_order.order_id),
+                            """
+                            UPDATE orders
+                            SET filled_volume = ?, status = ?, updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                float(exchange_order.filled_volume),
+                                exchange_order.status,
+                                self._get_current_timestamp_ms(),
+                                local_order.order_id,
+                            ),
                         )
                         await self._db.commit()
-                        await self.record_event(
-                            local_order.order_id,
-                            "filled",
-                            {"reason": "order_not_found_on_exchange"}
-                        )
-                        del self._open_orders[local_order.order_id]
-                else:
-                    if exchange_order.filled_volume > local_order.filled_volume:
-                        event_type = "partial_fill" if exchange_order.filled_volume < exchange_order.volume else "filled"
-                        await self.record_event(
-                            local_order.order_id,
-                            event_type,
-                            {
-                                "filled_volume": str(exchange_order.filled_volume),
-                                "status": exchange_order.status,
-                            }
-                        )
 
-                    self._open_orders[local_order.order_id] = exchange_order
-                    await self._db.execute(
-                        """
-                        UPDATE orders
-                        SET filled_volume = ?, status = ?, updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            float(exchange_order.filled_volume),
-                            exchange_order.status,
-                            self._get_current_timestamp_ms(),
-                            local_order.order_id,
-                        ),
-                    )
-                    await self._db.commit()
-
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     async def record_event(
         self, order_id: str, event_type: str, event_data: dict | None = None
