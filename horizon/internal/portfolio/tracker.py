@@ -32,6 +32,7 @@ class PortfolioTracker:
         registry: ExchangeRegistry,
         db: aiosqlite.Connection,
         fetcher: Any,
+        active_exchange: str,
         snapshot_interval_seconds: int = 60,
     ) -> None:
         """Initialize the portfolio tracker.
@@ -40,11 +41,13 @@ class PortfolioTracker:
             registry: Exchange registry for accessing adapters.
             db: Async SQLite database connection.
             fetcher: MarketDataFetcher instance for getting ticker prices.
+            active_exchange: Name of the active exchange to use.
             snapshot_interval_seconds: Interval between snapshots in seconds.
         """
         self._registry = registry
         self._db = db
         self._fetcher = fetcher
+        self._active_exchange = active_exchange
         self._snapshot_interval = snapshot_interval_seconds
         self._balances: dict[str, dict[str, Balance]] = {}
         self._snapshot_task: asyncio.Task | None = None
@@ -83,33 +86,25 @@ class PortfolioTracker:
                 logger.warning("Error in snapshot loop: %s", e)
 
     async def _refresh_balances(self) -> None:
-        """Refresh balances from all enabled exchanges."""
-        enabled = self._registry.list_enabled()
+        """Refresh balances from the active exchange only."""
+        active_adapter = self._registry.get_active_adapter(self._active_exchange)
+        if active_adapter is None:
+            logger.warning(
+                "No active adapter for exchange '%s' - skipping balance fetch",
+                self._active_exchange,
+            )
+            return
 
-        async def fetch_with_error_handling(adapter):
-            try:
-                return await adapter.fetch_all_balances()
-            except Exception as e:
-                logger.warning(
-                    "Failed to fetch balances from %s: %s",
-                    adapter.name,
-                    e,
-                )
-                return None
-
-        results = await asyncio.gather(
-            *[fetch_with_error_handling(adapter) for adapter in enabled],
-            return_exceptions=True,
-        )
-
-        async with self._lock:
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    continue
-                adapter = enabled[i]
-                if result is not None:
-                    # Convert list of Balance to dict keyed by asset
-                    self._balances[adapter.name] = {balance.asset: balance for balance in result}
+        try:
+            balances = await active_adapter.fetch_all_balances()
+            async with self._lock:
+                self._balances[active_adapter.name] = {balance.asset: balance for balance in balances}
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch balances from %s: %s",
+                active_adapter.name,
+                e,
+            )
 
     async def get_snapshot(self) -> PortfolioSnapshot:
         """Get a snapshot of the current portfolio state.
