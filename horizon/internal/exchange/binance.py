@@ -15,6 +15,7 @@ from .types import (
     OrderBook,
     OrderBookEntry,
     OrderResult,
+    SymbolInfo,
     Ticker,
 )
 
@@ -459,6 +460,41 @@ class BinanceAdapter(ExchangeAdapter):
             created_at_ms=data.get("transactTime", 0),
             updated_at_ms=data.get("updateTime", data.get("transactTime", 0)),
         )
+
+    async def fetch_all_symbols(self) -> list[SymbolInfo]:
+        """Fetch all tradeable symbols from Binance.
+
+        Returns:
+            List of SymbolInfo for all symbols with status=TRADING.
+
+        Raises:
+            ExchangeError: If the request fails.
+        """
+        data = await self._request("GET", "/api/v3/exchangeInfo")
+
+        symbols = []
+        for sym in data.get("symbols", []):
+            if sym.get("status") != "TRADING":
+                continue
+
+            base = sym["baseAsset"]
+            quote = sym["quoteAsset"]
+
+            # Convert Binance's BTCUSDT to generic BTC/USDT
+            generic_symbol = f"{base}/{quote}"
+
+            symbols.append(
+                SymbolInfo(
+                    exchange=self.name,
+                    symbol=generic_symbol,
+                    base_asset=base,
+                    quote_asset=quote,
+                    volume_24h=None,
+                    price=None,
+                )
+            )
+
+        return symbols
 
     async def close(self) -> None:
         """Close the adapter and release resources."""
