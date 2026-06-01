@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -11,12 +12,39 @@ import aiosqlite
 
 from ..exchange.registry import ExchangeRegistry
 from ..exchange.types import OrderResult
+from ..guardrails.cooldown_tracker import CooldownTracker
+from ..guardrails.evaluator import GuardrailResult, RiskGuardrailEvaluator, SystemMode
+from ..guardrails.rules import OrderRequest as GuardrailOrderRequest
+from ..guardrails.rules import StrategyConfig
+
+logger = logging.getLogger(__name__)
 
 
 class OrderSubmissionError(Exception):
     """Raised when order submission fails."""
 
     pass
+
+
+class GuardrailBlockedError(Exception):
+    """Raised when an order is blocked by the guardrail system."""
+
+    reason: str
+    result: GuardrailResult
+
+    def __init__(self, reason: str, result: GuardrailResult) -> None:
+        """Initialize GuardrailBlockedError.
+
+        Args:
+            reason: Human-readable reason for the block.
+            result: The GuardrailResult from the evaluation.
+        """
+        self.reason = reason
+        self.result = result
+        super().__init__(f"Guardrail blocked: {reason}")
+
+    def __str__(self) -> str:
+        return f"Guardrail blocked: {self.reason}"
 
 
 class OrderManager:
@@ -43,13 +71,24 @@ class OrderManager:
         source: str
         proposal_id: str | None = None
 
-    def __init__(self, registry: ExchangeRegistry, db: aiosqlite.Connection, active_exchange: str):
+    def __init__(
+        self,
+        registry: ExchangeRegistry,
+        db: aiosqlite.Connection,
+        active_exchange: str,
+        guardrail_evaluator: RiskGuardrailEvaluator | None = None,
+        cooldown_tracker: CooldownTracker | None = None,
+        strategy_config: StrategyConfig | None = None,
+    ):
         """Initialize the OrderManager.
 
         Args:
             registry: Exchange registry for accessing exchange adapters.
             db: Async SQLite database connection.
             active_exchange: Name of the active exchange for order validation.
+            guardrail_evaluator: Optional RiskGuardrailEvaluator for pre-trade checks.
+            cooldown_tracker: Optional CooldownTracker for cooldown recording.
+            strategy_config: Optional StrategyConfig for cooldown_seconds setting.
         """
         self._registry = registry
         self._db = db
@@ -58,6 +97,9 @@ class OrderManager:
         self._lock = asyncio.Lock()
         self._sync_task: asyncio.Task | None = None
         self._order_sync_interval_seconds: int = 30
+        self._guardrail_evaluator = guardrail_evaluator
+        self._cooldown_tracker = cooldown_tracker
+        self._strategy_config = strategy_config
 
     async def submit_order(self, request: OrderRequest) -> OrderResult:
         """Submit a new order to an exchange.
@@ -88,8 +130,42 @@ class OrderManager:
                     f"Submit orders to '{self._active_exchange}' only."
                 )
 
-            # Generate UUID v4 as internal order ID
+            # Generate UUID v4 as internal order ID (needed for guardrail event recording)
             internal_order_id = str(uuid.uuid4())
+
+            # Evaluate order against guardrails if evaluator is configured
+            if self._guardrail_evaluator is not None:
+                guardrail_request = GuardrailOrderRequest(
+                    symbol=request.symbol,
+                    side=request.side,
+                    order_type=request.order_type,
+                    price=request.price,
+                    volume=request.volume,
+                    exchange=request.exchange,
+                    source=request.source,
+                    notional=(request.price or Decimal("0")) * request.volume,
+                )
+                result = await self._guardrail_evaluator.evaluate(guardrail_request)
+
+                if not result.passed:
+                    # Record guardrail blocked event
+                    await self.record_event(
+                        internal_order_id,
+                        "guardrail_blocked",
+                        {
+                            "reason": result.reason,
+                            "violated_rules": result.violated_rules,
+                            "blocking": result.blocking,
+                            "downgrade_autonomy": result.downgrade_autonomy,
+                        },
+                    )
+                    raise GuardrailBlockedError(result.reason, result)
+
+                # Log any warnings
+                if result.violated_rules:
+                    logger.warning(
+                        f"Order passed guardrails with warnings: {result.reason}"
+                    )
 
             # Determine initial status
             initial_status = "pending"
@@ -193,6 +269,13 @@ class OrderManager:
 
             # Add to _open_orders
             self._open_orders[internal_order_id] = updated_result
+
+            # Record cooldown after successful order
+            if self._cooldown_tracker is not None and self._strategy_config is not None:
+                cooldown_seconds = getattr(self._strategy_config, "cooldown_seconds", 300)
+                await self._cooldown_tracker.record_trade(
+                    request.exchange, request.symbol, cooldown_seconds
+                )
 
             return updated_result
 
@@ -407,6 +490,39 @@ class OrderManager:
             (order_id, event_type, event_data_json, self._get_current_timestamp_ms()),
         )
         await self._db.commit()
+
+    async def get_guardrail_status(self) -> dict:
+        """Get current guardrail status.
+
+        Returns:
+            Dictionary with mode, cooldowns, and guardrail events count for today.
+        """
+        mode = SystemMode.LIVE
+        if self._guardrail_evaluator is not None:
+            mode = await self._guardrail_evaluator.get_current_mode()
+
+        cooldowns = []
+        if self._cooldown_tracker is not None:
+            cooldowns = await self._cooldown_tracker.get_all_cooldowns()
+
+        # Query today's guardrail events count
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        cursor = await self._db.execute(
+            """
+            SELECT COUNT(*) as count FROM guardrail_events
+            WHERE DATE(created_at) = DATE(?)
+            """,
+            (today,),
+        )
+        row = await cursor.fetchone()
+        guardrail_events_today = row["count"] if row else 0
+
+        return {
+            "mode": mode.value,
+            "cooldowns": cooldowns,
+            "guardrail_events_today": guardrail_events_today,
+        }
 
     async def stop(self) -> None:
         """Stop the order manager and cancel any background tasks."""
