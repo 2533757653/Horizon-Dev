@@ -16,6 +16,7 @@ from .types import (
     OrderBook,
     OrderBookEntry,
     OrderResult,
+    SymbolInfo,
     Ticker,
 )
 
@@ -454,6 +455,39 @@ class BitgetAdapter(ExchangeAdapter):
             return self._parse_order_result(data_list[0], symbol)
 
         raise ExchangeError(f"Bitget order not found: {exchange_order_id}")
+
+    async def fetch_all_symbols(self) -> list[SymbolInfo]:
+        """Fetch all tradeable symbols from Bitget.
+
+        Returns:
+            List of SymbolInfo for all symbols.
+
+        Raises:
+            ExchangeError: If the request fails.
+        """
+        response = await self._request("GET", "/api/v2/spot/public/symbols")
+
+        symbols = []
+        for sym in response.get("data", []):
+            exchange_symbol = sym.get("symbol", "")
+            base = sym.get("baseCoin", "")
+            quote = sym.get("quoteCoin", "")
+
+            # Convert BTCUSDT to generic BTC/USDT
+            generic_symbol = f"{base}/{quote}" if base and quote else exchange_symbol
+
+            symbols.append(
+                SymbolInfo(
+                    exchange=self.name,
+                    symbol=generic_symbol,
+                    base_asset=base,
+                    quote_asset=quote,
+                    volume_24h=None,
+                    price=None,
+                )
+            )
+
+        return symbols
 
     def _parse_order_result(self, data: dict, symbol: str) -> OrderResult:
         """Parse a Bitget order response into an OrderResult.
