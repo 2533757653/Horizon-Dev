@@ -348,9 +348,14 @@ def create_app(
         """
         datasource: DataSourceRegistry = app.state.datasource_registry
 
+        # Normalize symbol: 'BTCUSDT' -> 'BTC/USDT' for API compatibility
+        normalized_symbol = symbol
+        if "/" not in normalized_symbol and normalized_symbol.endswith("USDT"):
+            normalized_symbol = normalized_symbol[:-4] + "/USDT"
+
         try:
             candles = await datasource.get_klines(
-                symbol=symbol,
+                symbol=normalized_symbol,
                 timeframe=timeframe,
                 limit=limit,
                 force_refresh=refresh,

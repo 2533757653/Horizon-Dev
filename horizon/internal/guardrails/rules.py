@@ -9,7 +9,7 @@ Six concrete rules evaluate every order before exchange submission:
 6. DailyLossLimitRule: daily_pnl >= -max_daily_loss_pct * total_portfolio_usdt, only for autonomous -> BLOCK_AND_DOWNGRADE
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional
@@ -88,6 +88,7 @@ class StrategyConfig:
     """Strategy configuration for guardrail settings.
 
     Attributes:
+        mode: System operation mode (live/paper/collaborative).
         asset_whitelist: List of allowed trading symbols.
         order_min_notional: Minimum order notional in USDT.
         order_max_notional: Maximum order notional in USDT.
@@ -97,7 +98,8 @@ class StrategyConfig:
         max_daily_loss_pct: Max daily loss as fraction (e.g. 0.05 for 5%).
     """
 
-    asset_whitelist: list[str]
+    mode: str = "paper"
+    asset_whitelist: list[str] = field(default_factory=list)
     order_min_notional: Decimal = Decimal("10")
     order_max_notional: Decimal = Decimal("1000000")
     max_exchange_exposure_pct: float = 0.5

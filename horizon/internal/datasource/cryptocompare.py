@@ -57,8 +57,13 @@ class CryptoCompareAdapter:
         Returns:
             List of candle dicts: [{time, open, high, low, close, volume}, ...]
         """
-        # Convert symbol: 'BTC/USDT' -> base currency (e.g., 'BTC')
-        sym = symbol.split("/")[0]
+        # Normalize symbol: handle both 'BTC/USDT' and 'BTCUSDT' formats
+        normalized = symbol
+        if "/" not in normalized and normalized.endswith("USDT"):
+            normalized = normalized[:-4] + "/USDT"
+        parts = normalized.split("/")
+        sym = parts[0]  # e.g., 'BTC'
+        tsym = parts[1] if len(parts) > 1 else "USDT"  # e.g., 'USDT'
 
         # Map timeframe to CryptoCompare format
         timeframe_map = {
@@ -81,7 +86,7 @@ class CryptoCompareAdapter:
 
         params = {
             "fsym": sym,  # e.g., 'BTC'
-            "tsym": "USDT",
+            "tsym": tsym,  # e.g., 'USDT'
             "limit": limit,
         }
 

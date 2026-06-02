@@ -387,6 +387,7 @@ async def _load_strategy_config(db: aiosqlite.Connection) -> StrategyConfig | No
             asset_whitelist = []
 
     return StrategyConfig(
+        mode=row["mode"] if row["mode"] else "paper",
         asset_whitelist=asset_whitelist,
         order_min_notional=Decimal(str(row["order_min_notional"])) if row["order_min_notional"] else Decimal("10"),
         order_max_notional=Decimal(str(row["order_max_notional"])) if row["order_max_notional"] else Decimal("1000000"),

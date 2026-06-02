@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Optional
 import aiosqlite
 
 from ..exchange.registry import ExchangeRegistry
-from ..exchange.types import OrderBook, OrderBookEntry, Ticker
+from ..exchange.types import Ticker
 
 if TYPE_CHECKING:
     from ..pairlist.base import PairList
@@ -43,7 +43,6 @@ class MarketDataFetcher:
         self._symbols: list[str] = []
         self._poll_interval = poll_interval_seconds
         self._tickers: dict[str, dict[str, Ticker]] = {}
-        self._orderbooks: dict[str, dict[str, OrderBook]] = {}
         self._subscribers: list[asyncio.Queue[dict]] = []
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -146,28 +145,6 @@ class MarketDataFetcher:
                 },
             })
 
-        # Fetch orderbook
-        orderbook = await fetch_with_error_handling(
-            active_adapter.fetch_orderbook, symbol, 5
-        )
-
-        if orderbook is not None:
-            async with self._lock:
-                if symbol not in self._orderbooks:
-                    self._orderbooks[symbol] = {}
-                self._orderbooks[symbol][active_adapter.name] = orderbook
-
-            await self._broadcast({
-                "type": "orderbook",
-                "symbol": symbol,
-                "exchange": active_adapter.name,
-                "data": {
-                    "symbol": orderbook.symbol,
-                    "bids": [{"price": str(b.price), "size": str(b.size)} for b in orderbook.bids],
-                    "asks": [{"price": str(a.price), "size": str(a.size)} for a in orderbook.asks],
-                },
-            })
-
     async def _broadcast(self, message: dict) -> None:
         """Broadcast a message to all subscribers.
 
@@ -241,15 +218,6 @@ class MarketDataFetcher:
         """
         for symbol, exchange_tickers in self._tickers.items():
             for exchange, ticker in exchange_tickers.items():
-                orderbook = self._orderbooks.get(symbol, {}).get(exchange)
-
-                bid_str = None
-                ask_str = None
-                if orderbook and orderbook.bids:
-                    bid_str = str(orderbook.bids[0].price)
-                if orderbook and orderbook.asks:
-                    ask_str = str(orderbook.asks[0].price)
-
                 await db.execute(
                     """
                     INSERT OR REPLACE INTO market_data_cache
@@ -260,8 +228,8 @@ class MarketDataFetcher:
                         exchange,
                         symbol,
                         str(ticker.price),
-                        bid_str,
-                        ask_str,
+                        None,
+                        None,
                         str(ticker.volume_24h),
                     ),
                 )

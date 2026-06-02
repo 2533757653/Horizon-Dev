@@ -16,7 +16,7 @@ import aiosqlite
 
 from ..exchange.adapter import ExchangeAdapter
 from ..exchange.registry import ExchangeRegistry
-from ..exchange.types import Balance, OrderBook, Ticker
+from ..exchange.types import Balance, Ticker
 from ..indicators.calculator import TechnicalIndicatorCalculator
 from ..marketdata.fetcher import MarketDataFetcher
 from ..proposals.queue import ProposalQueue
@@ -345,24 +345,8 @@ class LLMStrategyEngine:
                 for t in symbol_tickers
             ]
 
-            # Get orderbook from first enabled adapter
+            # Orderbook data no longer collected (not needed for this project)
             orderbook_data = None
-            enabled = self._registry.list_enabled()
-            if enabled:
-                try:
-                    orderbook: OrderBook = await enabled[0].fetch_orderbook(symbol, depth=5)
-                    orderbook_data = {
-                        "bids": [
-                            {"price": str(e.price), "size": str(e.size)}
-                            for e in orderbook.bids
-                        ],
-                        "asks": [
-                            {"price": str(e.price), "size": str(e.size)}
-                            for e in orderbook.asks
-                        ],
-                    }
-                except Exception as e:
-                    logger.warning("Failed to fetch orderbook for %s: %s", symbol, e)
 
             # Get recent trades from first enabled adapter
             trades_data: list[dict] = []
