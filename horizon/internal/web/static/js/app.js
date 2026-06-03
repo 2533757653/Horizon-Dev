@@ -438,7 +438,7 @@ async function loadBalance() {
             const initialCash = summary.initial_cash || 0;
             const currentCash = summary.current_cash || 0;
             const positionValue = summary.position_value || 0;
-            const unrealizedPnl = summary.unrealized_pnl || 0;
+            const unrealizedPnl = summary.total_unrealized_pnl || 0;
             totalEl.textContent = `$${totalBalance.toFixed(2)}`;
             totalEl.className = totalBalance >= initialCash ? 'stat-value-large positive' : 'stat-value-large negative';
             assetsEl.innerHTML = `

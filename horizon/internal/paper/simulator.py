@@ -54,6 +54,28 @@ class PaperTradeResult:
     paper_pnl: Decimal = Decimal("0")
 
 
+def _normalize_symbol(symbol: str) -> str:
+    """Normalize a user-supplied symbol to canonical ``BASE/QUOTE`` form.
+
+    Paper positions are stored under this canonical form so equivalent
+    inputs (e.g. ``BTCUSDT`` vs ``BTC/USDT``) collapse to a single row.
+
+    Examples:
+        ``BTCUSDT``   -> ``BTC/USDT``
+        ``BTC/USDT``  -> ``BTC/USDT``  (unchanged)
+        ``ETHUSDC``   -> ``ETH/USDC``
+        ``ETH/USDC``  -> ``ETH/USDC``  (unchanged)
+        ``BTC-USD``   -> ``BTC-USD``   (unchanged, unknown quote suffix)
+    """
+    if "/" in symbol:
+        return symbol
+    if symbol.endswith("USDT") and len(symbol) > 4:
+        return f"{symbol[:-4]}/USDT"
+    if symbol.endswith("USDC") and len(symbol) > 4:
+        return f"{symbol[:-4]}/USDC"
+    return symbol
+
+
 def _generate_order_id() -> str:
     """Generate a unique paper trade order ID.
 
@@ -151,6 +173,29 @@ class PaperTradingSimulator:
                 (new_balance, now),
             )
 
+    async def _check_cash_available(self, side: str, notional: float) -> None:
+        """Raise PaperTradeError if a buy would push cash below zero.
+
+        Paper trading has no leverage/margin concept — buys must be fully
+        cash-funded. Sells always ADD cash so they are never rejected here
+        (a sell from a deficit state still reduces the deficit).
+
+        Must be called BEFORE any writes to paper_trades / paper_positions
+        so a rejected order leaves the database untouched.
+        """
+        if side != "buy":
+            return  # sells always permitted
+
+        cursor = await self._db.execute("SELECT current_cash FROM paper_cash WHERE id = 1")
+        row = await cursor.fetchone()
+        available = float(row["current_cash"]) if row else self._initial_cash_usdt
+
+        if notional > available:
+            raise PaperTradeError(
+                f"Insufficient cash: buy requires ${notional:.2f} "
+                f"but only ${available:.2f} available"
+            )
+
     async def simulate_market_order(
         self,
         proposal_id: str | None,
@@ -177,31 +222,37 @@ class PaperTradingSimulator:
         Raises:
             PaperTradeError: If market data is unavailable.
         """
-        # Normalize symbol for fetcher lookup
-        # Handle cases like 'BTCUSDT' → 'BTC/USDC' (Hyperliquid perpetual format)
-        normalized_symbol = symbol
-        if "/" not in normalized_symbol and normalized_symbol.endswith("USDT"):
-            base = normalized_symbol[:-4]  # 'BTC'
-            # Hyperliquid stores perpetuals as USDC-margined
-            for quote in ["USDC", "USDT"]:
-                candidate = f"{base}/{quote}"
-                if candidate in self._fetcher._tickers:
-                    normalized_symbol = candidate
-                    break
-            else:
-                normalized_symbol = f"{base}/USDT"
+        # Normalize the symbol to canonical BASE/QUOTE so that 'BTCUSDT' and
+        # 'BTC/USDT' produce the same position row. The normalized form is
+        # used for BOTH the ticker lookup AND the position storage below.
+        symbol = _normalize_symbol(symbol)
 
-        # Fetch ticker: try fetcher first, then direct adapter fetch
-        ticker = self._fetcher.get_ticker(normalized_symbol, exchange)
+        # Build candidate list: canonical form first, then the USDC variant
+        # (Hyperliquid perpetuals are USDC-margined) as a fallback for ticker
+        # lookup only — the position itself is stored under the canonical form.
+        usdc_variant = None
+        if "/" in symbol and symbol.endswith("/USDT"):
+            usdc_variant = symbol[:-4] + "USDC"  # 'BTC/USDT' -> 'BTC/USDC'
+        ticker_candidates = [symbol] if usdc_variant is None else [symbol, usdc_variant]
+
+        # Fetch ticker: try fetcher cache first for each candidate
+        ticker = None
+        for candidate in ticker_candidates:
+            ticker = self._fetcher.get_ticker(candidate, exchange)
+            if ticker is not None:
+                break
 
         # Fallback: fetch directly from exchange adapter if not in fetcher cache
         if ticker is None and hasattr(self._fetcher, '_registry'):
             adapter = self._fetcher._registry.get_active_adapter(exchange)
             if adapter is not None:
-                try:
-                    ticker = await adapter.fetch_ticker(normalized_symbol)
-                except Exception:
-                    pass
+                for candidate in ticker_candidates:
+                    try:
+                        ticker = await adapter.fetch_ticker(candidate)
+                        if ticker is not None:
+                            break
+                    except Exception:
+                        pass
 
         if ticker is None:
             raise PaperTradeError(f"No ticker available for {symbol} on {exchange}")
@@ -213,6 +264,12 @@ class PaperTradingSimulator:
             price = ticker.price
 
         notional = price * volume
+
+        # Enforce cash floor: reject buys that would overdraw the account.
+        # This is the primary defense against the bug where paper cash
+        # could go arbitrarily negative (no liquidation in paper mode).
+        await self._check_cash_available(side, float(notional))
+
         order_id = _generate_order_id()
         now = datetime.now(timezone.utc)
 
@@ -298,13 +355,40 @@ class PaperTradingSimulator:
         Raises:
             PaperTradeError: If price validation fails or market data unavailable.
         """
+        # Normalize symbol to canonical BASE/QUOTE so 'BTCUSDT' and
+        # 'BTC/USDT' produce the same position row.
+        symbol = _normalize_symbol(symbol)
+
+        # Build candidate list: canonical form first, then USDC variant
+        # (Hyperliquid perpetuals) as a fallback for ticker lookup.
+        ticker_candidates = [symbol]
+        if "/" in symbol and symbol.endswith("/USDT"):
+            ticker_candidates.append(symbol[:-4] + "USDC")
+
         # Fetch ticker for market price validation
-        ticker = self._fetcher.get_ticker(symbol, exchange)
+        ticker = None
+        for candidate in ticker_candidates:
+            ticker = self._fetcher.get_ticker(candidate, exchange)
+            if ticker is not None:
+                break
+        if ticker is None and hasattr(self._fetcher, '_registry'):
+            adapter = self._fetcher._registry.get_active_adapter(exchange)
+            if adapter is not None:
+                for candidate in ticker_candidates:
+                    try:
+                        ticker = await adapter.fetch_ticker(candidate)
+                        if ticker is not None:
+                            break
+                    except Exception:
+                        pass
         if ticker is None:
             raise PaperTradeError(f"No ticker available for {symbol} on {exchange}")
 
         market_price = ticker.price
         notional = price * volume
+
+        # Enforce cash floor: reject buys that would overdraw the account.
+        await self._check_cash_available(side, float(notional))
 
         # Validate limit price is within 2% of market
         if side == "buy":
@@ -403,27 +487,32 @@ class PaperTradingSimulator:
         Raises:
             PaperTradeError: If no position found or insufficient volume.
         """
-        # Normalize symbol for fetcher lookup
-        normalized_symbol = symbol
-        if "/" not in normalized_symbol and normalized_symbol.endswith("USDT"):
-            base = normalized_symbol[:-4]
-            for quote in ["USDC", "USDT"]:
-                candidate = f"{base}/{quote}"
-                if candidate in self._fetcher._tickers:
-                    normalized_symbol = candidate
-                    break
-            else:
-                normalized_symbol = f"{base}/USDT"
+        # Normalize symbol to canonical BASE/QUOTE so 'BTCUSDT' and
+        # 'BTC/USDT' both look up the same position row.
+        symbol = _normalize_symbol(symbol)
+
+        # Build candidate list: canonical form first, then USDC variant
+        # (Hyperliquid perpetuals) as a fallback for ticker lookup.
+        ticker_candidates = [symbol]
+        if "/" in symbol and symbol.endswith("/USDT"):
+            ticker_candidates.append(symbol[:-4] + "USDC")
 
         # Fetch current ticker for closing price: try fetcher, then direct adapter
-        ticker = self._fetcher.get_ticker(normalized_symbol, exchange)
+        ticker = None
+        for candidate in ticker_candidates:
+            ticker = self._fetcher.get_ticker(candidate, exchange)
+            if ticker is not None:
+                break
         if ticker is None and hasattr(self._fetcher, '_registry'):
             adapter = self._fetcher._registry.get_active_adapter(exchange)
             if adapter is not None:
-                try:
-                    ticker = await adapter.fetch_ticker(normalized_symbol)
-                except Exception:
-                    pass
+                for candidate in ticker_candidates:
+                    try:
+                        ticker = await adapter.fetch_ticker(candidate)
+                        if ticker is not None:
+                            break
+                    except Exception:
+                        pass
         if ticker is None:
             raise PaperTradeError(f"No ticker available for {symbol} on {exchange}")
 

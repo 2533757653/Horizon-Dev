@@ -76,11 +76,23 @@ class PortfolioTracker:
         logger.info("Portfolio tracker started with interval %ds", self._snapshot_interval)
 
     async def _snapshot_loop(self) -> None:
-        """Background loop that periodically saves portfolio snapshots."""
+        """Background loop that periodically saves portfolio snapshots.
+
+        Sleeps in small (0.5s) chunks so `_stop_event` is checked
+        frequently even if `cancel()` is missed for any reason. This is
+        defense-in-depth on top of `task.cancel()` in `stop()`.
+        """
+        chunk = 0.5
         while not self._stop_event.is_set():
             try:
-                # Sleep for the configured interval
-                await asyncio.sleep(self._snapshot_interval)
+                # Sleep for the configured interval, checking stop_event
+                elapsed = 0.0
+                while elapsed < self._snapshot_interval and not self._stop_event.is_set():
+                    await asyncio.sleep(chunk)
+                    elapsed += chunk
+
+                if self._stop_event.is_set():
+                    break
 
                 # Refresh balances
                 await self._refresh_balances()
@@ -238,11 +250,17 @@ class PortfolioTracker:
         return [dict(row) for row in rows]
 
     async def stop(self) -> None:
-        """Stop the portfolio tracker and save a final snapshot."""
+        """Stop the portfolio tracker and save a final snapshot.
+
+        Cancels the running task so any in-flight `asyncio.sleep` is
+        interrupted immediately — we don't wait for the full snapshot
+        interval to elapse before returning.
+        """
         if self._stop_event is not None:
             self._stop_event.set()
 
         if self._snapshot_task is not None:
+            self._snapshot_task.cancel()
             try:
                 await self._snapshot_task
             except asyncio.CancelledError:

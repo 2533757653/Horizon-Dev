@@ -325,7 +325,9 @@ async def test_update_market_prices(simulator, db):
 @pytest.mark.asyncio
 async def test_get_paper_positions(simulator, db):
     """Test retrieving all paper positions."""
-    # Create positions
+    # Create positions (volumes kept small so total stays within the
+    # $20k default initial cash — the new cash-floor validation would
+    # otherwise reject the second order).
     await simulator.simulate_market_order(
         proposal_id="prop-1",
         exchange="binance",
@@ -338,7 +340,7 @@ async def test_get_paper_positions(simulator, db):
         exchange="binance",
         symbol="ETH/USDT",
         side="buy",
-        volume=Decimal("1.0"),
+        volume=Decimal("0.1"),
     )
 
     positions = await simulator.get_paper_positions()

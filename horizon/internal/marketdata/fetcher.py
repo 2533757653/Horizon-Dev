@@ -60,10 +60,16 @@ class MarketDataFetcher:
         self._task = asyncio.create_task(self._poll_loop())
 
     async def stop(self) -> None:
-        """Stop the background polling loop and wait for completion."""
+        """Stop the background polling loop and wait for completion.
+
+        Cancels the running task so any in-flight `asyncio.sleep` is
+        interrupted immediately — we don't wait for the full poll_interval
+        to elapse before returning.
+        """
         self._stop_event.set()
 
         if self._task is not None:
+            self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
@@ -71,7 +77,12 @@ class MarketDataFetcher:
             self._task = None
 
     async def _poll_loop(self) -> None:
-        """Infinite polling loop that fetches data for all symbols."""
+        """Infinite polling loop that fetches data for all symbols.
+
+        Sleeps in small (0.5s) chunks so `_stop_event` is checked
+        frequently even if `cancel()` is missed for any reason. This is
+        defense-in-depth on top of `task.cancel()` in `stop()`.
+        """
         while not self._stop_event.is_set():
             # Refresh symbol list from active PairList
             try:
@@ -92,7 +103,12 @@ class MarketDataFetcher:
                     break
                 await self._fetch_symbol(symbol)
 
-            await asyncio.sleep(self._poll_interval)
+            # Sleep in 0.5s chunks, checking stop_event each tick.
+            elapsed = 0.0
+            chunk = 0.5
+            while elapsed < self._poll_interval and not self._stop_event.is_set():
+                await asyncio.sleep(chunk)
+                elapsed += chunk
 
     async def _fetch_symbol(self, symbol: str) -> None:
         """Fetch ticker and orderbook for a symbol from the active exchange.
