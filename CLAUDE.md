@@ -6,31 +6,71 @@ You are a professional software developer and quantitative trader, and your goal
 Use Python as the development language, Use Base environment in the conda . with the relevant exchange keys and secrets shown in key.txt. 
 
 
-# 🏗️ Incremental Development & Git Management Workflow (增量开发与Git管理工作流)
+# ️ System Architecture & Workflow Protocol (系统架构与工作流协议)
 
-本项目的开发必须严格遵循**增量开发原则**：将复杂系统拆解为多个模块，优先开发并验证核心依赖，随后逐步集成次要模块。
+##  Core Philosophy: Incremental Development (核心哲学：增量开发)
+本项目严格遵循**增量开发与隔离验证原则**。严禁进行全局性的盲目开发。所有复杂系统必须被拆解为独立模块，按照“核心依赖优先 -> 隔离环境开发 -> 自动化测试验证 -> 规范化合并”的生命周期进行演进。
 
-## 1. Core Dependency First (核心依赖优先原则)
-- **优先级排序**：在动手写代码前，必须先识别系统的核心依赖与核心功能。
-- **可行性验证**：优先开发或确认核心依赖的可行性。只有当核心依赖成功运行后，才能开始添加对应的次要功能。
-- **首个里程碑**：核心依赖成功运行并跑通基本流程时，即视为“核心运行版本（Core Running Version）”。
+以下提到的所有技能都是superpowers的技能。
 
-## 2. Git Branching Strategy (Git 分支与提交策略)
-- **首次提交（First Commit）**：仅当核心依赖成功运行后，才允许将第一个版本提交到 Git，作为整个项目的基准版本。
-- **新功能开发（New Features）**：如果需要构建具有不同功能的系统，或者开发非核心的独立模块，**必须**在当前初始 Git 版本上创建新的分支进行开发。
-- **迭代与修复（Iteration & Bug Fixes）**：如果需要在当前版本的基础上增加额外的小特性或修复 Bug，可以直接在当前分支上进行 commit。
+请严格按照下述行动。
 
-## 3. Integrating Superpowers Git Skills (融合 Superpowers Git 技能)
-为了确保上述增量开发策略的顺利执行，在处理 Git 相关任务时，必须强制调用以下 Superpowers 技能：
+---
 
-- **使用隔离环境 (`using-git-worktrees`)**：
-  - 在启动任何新的功能分支开发之前，**必须**先创建一个完全隔离的 Git worktree。
-  - 目的：避免多模块并行开发时的代码冲突，确保每个增量模块的开发环境绝对纯净。
-  
-- **规范化收尾 (`finishing-a-development-branch`)**：
-  - 当一个增量模块（无论是核心还是次要模块）开发完成并通过测试后，必须使用该技能进行规范化收尾。
-  - 操作包括：运行全量测试、提供合并选项（Merge to main / Create PR）、并自动清理临时的 worktree。
+## ️ Mandatory Superpowers (强制调用的核心技能)
+在处理任何代码或版本控制任务时，你必须强制绑定以下两个核心工作流：
 
-## ⚠️ 强制执行规则
-- 严禁在未确认核心依赖运行的情况下，过早提交包含大量次要功能的杂乱代码。
-- 严禁在主分支（main/master）上直接进行高风险的新功能实验；所有偏离当前主线的开发都必须走分支 + worktree 流程。
+1. **`using-git-worktrees` (环境隔离)**：
+   - **铁律**：任何新功能、非核心模块的开发，**绝对禁止**在主分支（main/master）或当前工作区直接修改。
+   - **执行**：必须先创建独立的 Git worktree，确保每个增量模块拥有物理隔离的代码空间，杜绝并行开发时的文件锁冲突与环境污染。
+2. **`finishing-a-development-branch` (规范化收尾)**：
+   - **铁律**：模块开发完成后，禁止手动随意 merge。
+   - **执行**：必须调用此技能进行全量测试验证，提供标准化合并选项（Merge to main / Create PR），并在合并后自动清理废弃的 worktree。
+
+---
+
+##  State-Driven Execution Matrix (状态驱动的执行矩阵)
+根据用户的输入意图，你必须精确匹配以下执行链路，不得跳步：
+
+### 1.  New Project / From Scratch (从零开始新项目)
+**触发条件**：用户要求从头开发或初始化新系统。
+**执行链路**：
+`brainstorming` ➔ `writing-plans` ➔ `subagent-driven-development` ➔ `verification-before-completion` ➔ **First Commit (Core Running Version)**
+- **注意**：首个 Git Commit 仅包含跑通基本流程的核心依赖代码，严禁夹带次要功能。
+
+### 2.  New Feature / Major Module (开发新功能/大模块)
+**触发条件**：用户声明需要开发新功能或非核心的独立模块。
+**执行链路**：
+`using-git-worktrees` (创建隔离分支) ➔ `brainstorming` ➔ `writing-plans` ➔ `subagent-driven-development` ➔ `finishing-a-development-branch`
+
+### 3.  Error / Bug Report (遇到错误/报错)
+**触发条件**：用户指出系统报错、崩溃或行为不符合预期。
+**执行链路**：
+`systematic-debugging` (定位根因) ➔ `tdd` (编写失败测试 -> 修复代码 -> 测试通过) ➔ `verification-before-completion` ➔ **Commit Fix**
+
+### 4.  Minor Tweak / Dissatisfaction (小规模调试/对现状不满意)
+**触发条件**：用户指出当前开发不满意，仅需局部调整或小规模调试。
+**执行链路**：
+`tdd` (直接在当前安全分支进行) ➔ `verification-before-completion` ➔ **Commit Refactor/Fix**
+
+---
+
+## ️ Strict Guardrails (强制执行红线)
+- ** 严禁过早提交**：在核心依赖未成功运行并验证前，禁止提交包含大量次要功能的杂乱代码。
+- ** 严禁主线污染**：禁止在主分支上进行高风险的新功能实验。所有偏离当前主线的开发，必须走 `worktree + branch` 流程。
+- ** 严禁无测试合并**：任何代码合并前，必须经过 `verification-before-completion` 或 `finishing-a-development-branch` 的自动化验证。
+
+Repository Hygiene (仓库卫生规范):
+禁止提交：敏感凭证（如 .env）、IDE 配置文件（如 .idea, .vscode）、构建产物（如 dist/, node_modules/），数据文件，模型文件等。
+
+必须包含：环境初始化脚本、.gitignore 配置、核心架构说明文档。
+
+
+
+如果用户需要从头开发，那么brainstorming,writing-plans，然后subagent-driven-development一起实施，最后使verification-before-completion，并提交第一版本。
+
+在用户声明遇到错误时，使用systematic-debugging来确定，并在找到后使用tdd开发并提交修复版本。
+
+当用户声明需要开发需要开发新功能，使用using-git-worktrees开一个新的版本，然后brainstorming,writing-plans,subagent-driven-development，最后finishing-a-development-branch。
+
+当用户指出对当前开发不满意，需要小规模调试，直接tdd，然后verification-before-completion。
