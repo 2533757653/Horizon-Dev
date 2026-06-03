@@ -60,7 +60,13 @@ export async function getPaperSummary() {
 }
 
 export async function getPaperPositions() {
-    return request('/paper/positions');
+    const response = await request('/paper/positions');
+    return response.positions;  // Extract array from wrapper
+}
+
+export async function getPaperTrades() {
+    const response = await request('/paper/trades');
+    return response.trades;  // Extract array from wrapper
 }
 
 export async function postStrategyMode(mode) {
@@ -69,6 +75,10 @@ export async function postStrategyMode(mode) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode }),
     });
+}
+
+export async function getStrategyMode() {
+    return request('/strategy/mode');
 }
 
 export async function putStrategyConfig(config) {

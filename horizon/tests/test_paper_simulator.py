@@ -73,6 +73,14 @@ async def db():
             llm_proposals INTEGER DEFAULT 0,
             updated_at TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS paper_cash (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            initial_cash REAL NOT NULL,
+            current_cash REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     await conn.commit()
     yield conn

@@ -3,7 +3,7 @@
 import { initKline, loadChart } from './kline.js';
 import { initPositions, renderPositions, updatePrices } from './positions.js';
 import { initOrderForm, setSymbol, showToast } from './orders.js';
-import { getExchanges, getGuardrailStatus, getGuardrailEvents, getPaperSummary, getPaperPositions, postStrategyMode, putStrategyConfig } from './api.js';
+import { getExchanges, getGuardrailStatus, getGuardrailEvents, getPaperSummary, getPaperPositions, postStrategyMode, putStrategyConfig, getStrategyMode } from './api.js';
 
 const state = {
     symbol: 'BTCUSDT',
@@ -35,6 +35,7 @@ async function init() {
     // Load guardrail UI
     await loadGuardrailStatus();
     await loadPaperTradingStats();
+    await loadBalance();
     await loadGuardrailEvents();
 
     // Setup UI listeners
@@ -418,3 +419,78 @@ window.showCooldownModal = showCooldownModal;
 
 // Bootstrap
 document.addEventListener('DOMContentLoaded', init);
+// ===== Balance Display =====
+async function loadBalance() {
+    try {
+        const modeRes = await getStrategyMode();
+        const mode = modeRes.mode;
+        const titleEl = document.getElementById('balance-title');
+        const hintEl = document.getElementById('balance-mode-hint');
+        const totalEl = document.getElementById('total-balance');
+        const assetsEl = document.getElementById('balance-assets');
+
+        if (mode === 'paper') {
+            // Show paper balance from /api/paper/summary
+            const summary = await getPaperSummary();
+            titleEl.textContent = 'Paper Trading Balance';
+            hintEl.textContent = '(simulated)';
+            const totalBalance = summary.total_balance || 0;
+            const initialCash = summary.initial_cash || 0;
+            const currentCash = summary.current_cash || 0;
+            const positionValue = summary.position_value || 0;
+            const unrealizedPnl = summary.unrealized_pnl || 0;
+            totalEl.textContent = `$${totalBalance.toFixed(2)}`;
+            totalEl.className = totalBalance >= initialCash ? 'stat-value-large positive' : 'stat-value-large negative';
+            assetsEl.innerHTML = `
+                <div class="balance-row">
+                    <span class="asset-name">Initial Cash</span>
+                    <span class="asset-value">$${initialCash.toFixed(2)}</span>
+                </div>
+                <div class="balance-row">
+                    <span class="asset-name">Available Cash</span>
+                    <span class="asset-value">$${currentCash.toFixed(2)}</span>
+                </div>
+                <div class="balance-row">
+                    <span class="asset-name">Position Value</span>
+                    <span class="asset-value">$${positionValue.toFixed(2)}</span>
+                </div>
+                <div class="balance-row">
+                    <span class="asset-name">Unrealized P&L</span>
+                    <span class="asset-value ${unrealizedPnl >= 0 ? 'positive' : 'negative'}">
+                        ${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}
+                    </span>
+                </div>
+            `;
+        } else {
+            // Show live balance from /api/portfolio
+            const portfolio = await getPortfolio();
+            titleEl.textContent = 'Account Balance (Live)';
+            hintEl.textContent = '(real exchange balances)';
+            const totalUsdt = parseFloat(portfolio.total_usdt_value || '0');
+            totalEl.textContent = `$${totalUsdt.toFixed(2)}`;
+            totalEl.className = 'stat-value-large';
+            const exchanges = portfolio.exchanges || {};
+            const rows = [];
+            for (const [exchange, balances] of Object.entries(exchanges)) {
+                for (const b of balances) {
+                    rows.push(`
+                        <div class="balance-row">
+                            <span class="asset-name">${b.asset}</span>
+                            <span class="asset-value">${b.free}</span>
+                        </div>
+                    `);
+                }
+            }
+            if (rows.length === 0) {
+                assetsEl.innerHTML = '<div class="balance-row"><span class="asset-name">No balances yet (fetching...)</span></div>';
+            } else {
+                assetsEl.innerHTML = rows.join('');
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load balance:', e);
+    }
+}
+
+// Refresh balance every 30s
+setInterval(loadBalance, 30000);

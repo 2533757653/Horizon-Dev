@@ -74,15 +74,82 @@ class PaperTradingSimulator:
         self,
         db: aiosqlite.Connection,
         fetcher: "MarketDataFetcher",
+        initial_cash_usdt: float = 20000.0,
     ) -> None:
         """Initialize the paper trading simulator.
 
         Args:
             db: Async SQLite database connection.
             fetcher: MarketDataFetcher instance for fetching market prices.
+            initial_cash_usdt: Virtual starting cash in USDT for paper trading.
         """
         self._db = db
         self._fetcher = fetcher
+        self._initial_cash_usdt = float(initial_cash_usdt)
+
+    async def init_cash(self) -> None:
+        """Initialize paper_cash row if it doesn't exist yet.
+
+        Idempotent: if a row already exists, leaves current_cash untouched
+        so paper balances persist across restarts.
+        """
+        now = datetime.now(timezone.utc)
+        await self._db.execute(
+            """
+            INSERT OR IGNORE INTO paper_cash (id, initial_cash, current_cash, created_at, updated_at)
+            VALUES (1, ?, ?, ?, ?)
+            """,
+            (self._initial_cash_usdt, self._initial_cash_usdt, now, now),
+        )
+        await self._db.commit()
+
+    async def get_cash(self) -> dict:
+        """Return current and initial paper cash balances.
+
+        Returns a dict with keys: initial_cash, current_cash, position_value,
+        total_balance (current_cash + position_value at current market price).
+        """
+        cash = {"initial_cash": self._initial_cash_usdt, "current_cash": self._initial_cash_usdt}
+        cursor = await self._db.execute("SELECT initial_cash, current_cash FROM paper_cash WHERE id = 1")
+        row = await cursor.fetchone()
+        if row is not None:
+            cash["initial_cash"] = float(row["initial_cash"] or 0.0)
+            cash["current_cash"] = float(row["current_cash"] or 0.0)
+
+        # Add position notional at current price (paper position value)
+        cursor = await self._db.execute(
+            "SELECT COALESCE(SUM(volume * current_price), 0.0) as pos_value FROM paper_positions"
+        )
+        pos_row = await cursor.fetchone()
+        position_value = float(pos_row["pos_value"] or 0.0) if pos_row else 0.0
+
+        cash["position_value"] = position_value
+        cash["total_balance"] = cash["current_cash"] + position_value
+        return cash
+
+    async def _adjust_cash(self, delta: float) -> None:
+        """Adjust current_cash by delta (positive on sell, negative on buy)."""
+        now = datetime.now(timezone.utc)
+        cursor = await self._db.execute("SELECT current_cash FROM paper_cash WHERE id = 1")
+        row = await cursor.fetchone()
+        if row is None:
+            current = self._initial_cash_usdt
+        else:
+            current = float(row["current_cash"] or 0.0)
+        new_balance = current + delta
+        if row is None:
+            await self._db.execute(
+                """
+                INSERT INTO paper_cash (id, initial_cash, current_cash, created_at, updated_at)
+                VALUES (1, ?, ?, ?, ?)
+                """,
+                (self._initial_cash_usdt, new_balance, now, now),
+            )
+        else:
+            await self._db.execute(
+                "UPDATE paper_cash SET current_cash = ?, updated_at = ? WHERE id = 1",
+                (new_balance, now),
+            )
 
     async def simulate_market_order(
         self,
@@ -110,8 +177,32 @@ class PaperTradingSimulator:
         Raises:
             PaperTradeError: If market data is unavailable.
         """
-        # Fetch ticker for market price
-        ticker = self._fetcher.get_ticker(symbol, exchange)
+        # Normalize symbol for fetcher lookup
+        # Handle cases like 'BTCUSDT' → 'BTC/USDC' (Hyperliquid perpetual format)
+        normalized_symbol = symbol
+        if "/" not in normalized_symbol and normalized_symbol.endswith("USDT"):
+            base = normalized_symbol[:-4]  # 'BTC'
+            # Hyperliquid stores perpetuals as USDC-margined
+            for quote in ["USDC", "USDT"]:
+                candidate = f"{base}/{quote}"
+                if candidate in self._fetcher._tickers:
+                    normalized_symbol = candidate
+                    break
+            else:
+                normalized_symbol = f"{base}/USDT"
+
+        # Fetch ticker: try fetcher first, then direct adapter fetch
+        ticker = self._fetcher.get_ticker(normalized_symbol, exchange)
+
+        # Fallback: fetch directly from exchange adapter if not in fetcher cache
+        if ticker is None and hasattr(self._fetcher, '_registry'):
+            adapter = self._fetcher._registry.get_active_adapter(exchange)
+            if adapter is not None:
+                try:
+                    ticker = await adapter.fetch_ticker(normalized_symbol)
+                except Exception:
+                    pass
+
         if ticker is None:
             raise PaperTradeError(f"No ticker available for {symbol} on {exchange}")
 
@@ -159,10 +250,12 @@ class PaperTradingSimulator:
             current_price=float(price),
         )
 
-        # Update daily_pnl with paper trade value
-        await self._update_daily_pnl(paper_pnl=float(notional))
+        # Adjust virtual cash: buy spends cash, sell receives cash
+        cash_delta = -float(notional) if side == "buy" else float(notional)
+        await self._adjust_cash(cash_delta)
 
-        await self._db.commit()
+        # Update daily_pnl: opening a position does not realize PnL
+        await self._update_daily_pnl(paper_pnl=0.0)
 
         return PaperTradeResult(
             order_id=order_id,
@@ -266,10 +359,12 @@ class PaperTradingSimulator:
             current_price=float(price),
         )
 
-        # Update daily_pnl with paper trade value
-        await self._update_daily_pnl(paper_pnl=float(notional))
+        # Adjust virtual cash: buy spends cash, sell receives cash
+        cash_delta = -float(notional) if side == "buy" else float(notional)
+        await self._adjust_cash(cash_delta)
 
-        await self._db.commit()
+        # Update daily_pnl: opening a position does not realize PnL
+        await self._update_daily_pnl(paper_pnl=0.0)
 
         return PaperTradeResult(
             order_id=order_id,
@@ -308,8 +403,27 @@ class PaperTradingSimulator:
         Raises:
             PaperTradeError: If no position found or insufficient volume.
         """
-        # Fetch current ticker for closing price
-        ticker = self._fetcher.get_ticker(symbol, exchange)
+        # Normalize symbol for fetcher lookup
+        normalized_symbol = symbol
+        if "/" not in normalized_symbol and normalized_symbol.endswith("USDT"):
+            base = normalized_symbol[:-4]
+            for quote in ["USDC", "USDT"]:
+                candidate = f"{base}/{quote}"
+                if candidate in self._fetcher._tickers:
+                    normalized_symbol = candidate
+                    break
+            else:
+                normalized_symbol = f"{base}/USDT"
+
+        # Fetch current ticker for closing price: try fetcher, then direct adapter
+        ticker = self._fetcher.get_ticker(normalized_symbol, exchange)
+        if ticker is None and hasattr(self._fetcher, '_registry'):
+            adapter = self._fetcher._registry.get_active_adapter(exchange)
+            if adapter is not None:
+                try:
+                    ticker = await adapter.fetch_ticker(normalized_symbol)
+                except Exception:
+                    pass
         if ticker is None:
             raise PaperTradeError(f"No ticker available for {symbol} on {exchange}")
 
@@ -414,11 +528,14 @@ class PaperTradingSimulator:
                 ),
             )
 
+        # Adjust virtual cash: closing a long = sell (receive cash),
+        # closing a short = buy (spend cash)
+        close_cash_delta = float(notional) if side == "sell" else -float(notional)
+        await self._adjust_cash(close_cash_delta)
+
         # Update daily_pnl with realized P&L (negative of notional = cost basis)
         # P&L is added (pnl can be positive or negative)
         await self._update_daily_pnl(paper_pnl=float(pnl))
-
-        await self._db.commit()
 
         return PaperTradeResult(
             order_id=order_id,
@@ -452,8 +569,31 @@ class PaperTradingSimulator:
             volume = Decimal(str(row["volume"]))
             entry_price = Decimal(str(row["avg_entry_price"]))
 
-            # Fetch current ticker
-            ticker = self._fetcher.get_ticker(symbol, exchange)
+            # Normalize symbol for fetcher lookup
+            # Handle 'BTCUSDT' -> 'BTC/USDC' (Hyperliquid perpetual)
+            normalized_symbol = symbol
+            if "/" not in symbol and symbol.endswith("USDT"):
+                base = symbol[:-4]
+                for quote in ["USDC", "USDT"]:
+                    candidate = f"{base}/{quote}"
+                    if candidate in self._fetcher._tickers:
+                        normalized_symbol = candidate
+                        break
+                else:
+                    normalized_symbol = f"{base}/USDT"
+
+            # Fetch current ticker: try fetcher first, then direct adapter
+            ticker = self._fetcher.get_ticker(normalized_symbol, exchange)
+
+            # Fallback: fetch directly from exchange adapter if not in fetcher cache
+            if ticker is None and hasattr(self._fetcher, '_registry'):
+                adapter = self._fetcher._registry.get_active_adapter(exchange)
+                if adapter is not None:
+                    try:
+                        ticker = await adapter.fetch_ticker(normalized_symbol)
+                    except Exception:
+                        pass
+
             if ticker is None:
                 logger.warning(
                     f"No ticker for {symbol} on {exchange}, skipping price update"

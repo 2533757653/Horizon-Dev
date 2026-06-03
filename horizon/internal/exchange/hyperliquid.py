@@ -248,14 +248,13 @@ class HyperliquidAdapter(ExchangeAdapter):
         data = await self._request(payload)
 
         balances = []
-        spot_balances = data.get("spotBalances", [])
+        spot_balances = data.get("balances", [])
 
         for balance_data in spot_balances:
             coin = balance_data.get("coin", "")
-            # Hyperliquid spot balances have total and locked
-            # We treat total as free since detailed breakdown isn't provided
+            # API returns "total" and "hold" (locked)
             total = Decimal(str(balance_data.get("total", "0")))
-            locked = Decimal(str(balance_data.get("locked", "0")))
+            locked = Decimal(str(balance_data.get("hold", "0")))
             free = total - locked
 
             if total > 0 or locked > 0:

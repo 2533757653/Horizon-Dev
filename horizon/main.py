@@ -237,8 +237,16 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("RiskGuardrailEvaluator initialized")
 
     # 8. PaperTradingSimulator setup
-    paper_simulator = PaperTradingSimulator(db=db, fetcher=fetcher)
-    logger.info("PaperTradingSimulator initialized")
+    paper_simulator = PaperTradingSimulator(
+        db=db,
+        fetcher=fetcher,
+        initial_cash_usdt=settings.trading.initial_cash_usdt,
+    )
+    await paper_simulator.init_cash()
+    logger.info(
+        "PaperTradingSimulator initialized with initial cash %.2f USDT",
+        settings.trading.initial_cash_usdt,
+    )
 
     # 9. OrderManager setup with guardrail_evaluator
     order_manager = OrderManager(
@@ -493,13 +501,12 @@ def _create_app() -> FastAPI:
             poll_interval_seconds=settings.trading.market_data_poll_interval_seconds,
         )
 
-        portfolio_tracker = PortfolioTracker(
-            registry=registry,
-            db=db,
-            fetcher=fetcher,
-            active_exchange=active_exchange,
-            snapshot_interval_seconds=settings.trading.portfolio_snapshot_interval_seconds,
-        )
+        # NOTE: Do NOT instantiate PortfolioTracker here. The lifespan() below
+        # is the canonical owner: it creates the tracker, calls start() to load
+        # balances, and stores it in app.state.portfolio_tracker. Endpoints
+        # read from app.state so they always see the running instance with
+        # fresh data. Creating a second instance here would result in the
+        # API endpoint seeing a tracker with no balances ever loaded.
 
         order_manager = OrderManager(
             registry=registry,
@@ -514,7 +521,7 @@ def _create_app() -> FastAPI:
             registry=registry,
             fetcher=fetcher,
             order_manager=order_manager,
-            portfolio_tracker=portfolio_tracker,
+            portfolio_tracker=None,  # Created and started by lifespan()
         )
 
         # Override lifespan with our custom one for startup/shutdown

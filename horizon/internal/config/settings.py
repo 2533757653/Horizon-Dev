@@ -62,6 +62,7 @@ class TradingSettings(BaseSettings):
     market_data_poll_interval_seconds: int = 10
     portfolio_snapshot_interval_seconds: int = 60
     order_sync_interval_seconds: int = 30
+    initial_cash_usdt: float = 20000.0  # Paper trading starting cash
 
 
 class DatabaseSettings(BaseSettings):

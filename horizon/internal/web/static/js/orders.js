@@ -50,8 +50,9 @@ function renderForm() {
             <input type="number" id="order-price" placeholder="0.00" step="any" disabled />
         </div>
         <div class="form-group">
-            <label>Volume</label>
-            <input type="number" id="order-volume" placeholder="0.0000" step="any" />
+            <label>Volume (USD)</label>
+            <input type="number" id="order-volume" placeholder="0.00" step="any" min="0" />
+            <small class="form-hint">Order size in USD — server converts to base units at current market price</small>
         </div>
         <div class="toggle-row">
             <label class="toggle-label">
@@ -105,7 +106,7 @@ async function handleSubmit(e) {
         side: sideBtn?.dataset.side || 'buy',
         type: formEl.querySelector('#order-type').value,
         price: formEl.querySelector('#order-price').value ? parseFloat(formEl.querySelector('#order-price').value) : null,
-        volume: parseFloat(formEl.querySelector('#order-volume').value),
+        volume_usd: parseFloat(formEl.querySelector('#order-volume').value),
     };
 
     try {

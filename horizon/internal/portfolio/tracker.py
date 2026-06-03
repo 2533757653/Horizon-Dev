@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 class PortfolioTracker:
     """Tracks portfolio balances and USDT valuation across exchanges."""
 
+    # Stablecoins valued at face value (1:1 USD)
+    STABLECOINS = {"USDC", "USDT", "USDE", "USDH"}
+
+    # Assets excluded from USDT valuation. We only trade USD-futures, so
+    # exchange-native spot tokens (e.g. HYPE on Hyperliquid) are not part of
+    # the trading balance and should not be added to total_usdt_value.
+    EXCLUDED_ASSETS = {"HYPE"}
+
     @dataclass
     class PortfolioSnapshot:
         """A snapshot of portfolio balances and total value."""
@@ -123,8 +131,12 @@ class PortfolioTracker:
 
         for exchange_name, balances in exchanges.items():
             for balance in balances:
-                if balance.asset == "USDT":
-                    # USDT valued at face value
+                if balance.asset in self.EXCLUDED_ASSETS:
+                    # Excluded from valuation (e.g. HYPE on Hyperliquid since
+                    # we only trade USD-futures).
+                    value = Decimal("0")
+                elif balance.asset in self.STABLECOINS:
+                    # Stablecoins valued at face value
                     value = balance.free + balance.locked
                 else:
                     # Look up ticker for conversion to USDT
@@ -159,7 +171,9 @@ class PortfolioTracker:
             for exchange_name, balances in snapshot.exchanges.items():
                 for balance in balances:
                     # Calculate USDT value for this balance
-                    if balance.asset == "USDT":
+                    if balance.asset in self.EXCLUDED_ASSETS:
+                        usdt_value = Decimal("0")
+                    elif balance.asset in self.STABLECOINS:
                         usdt_value = balance.free + balance.locked
                     else:
                         ticker = self._fetcher.get_ticker(balance.asset + "USDT")

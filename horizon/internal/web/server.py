@@ -20,7 +20,7 @@ from ..guardrails.cooldown_tracker import CooldownTracker
 from ..guardrails.rules import StrategyConfig
 from ..marketdata.fetcher import MarketDataFetcher
 from ..ordermanager.manager import OrderManager, OrderSubmissionError
-from ..paper.simulator import PaperTradingSimulator
+from ..paper.simulator import PaperTradeError, PaperTradingSimulator
 from ..portfolio.tracker import PortfolioTracker
 from ..datasource import KlineCache, DataSourceRegistry
 if TYPE_CHECKING:
@@ -56,14 +56,25 @@ class CustomJSONResponse(JSONResponse):
 
 # Pydantic models for request validation
 class OrderRequestModel(BaseModel):
-    """Request model for order submission."""
+    """Request model for order submission.
+
+    The order can be expressed in two ways:
+    - ``volume`` (in symbol base units, e.g. BTC amount)
+    - ``volume_usd`` (in quote currency; server converts to base units using
+      the current market price for market orders, or the limit price for
+      limit orders)
+
+    If both are provided, ``volume_usd`` takes precedence. Exactly one of the
+    two must be supplied.
+    """
 
     exchange: str = Field(..., description="Exchange name")
     symbol: str = Field(..., description="Trading symbol")
     side: Literal["buy", "sell"] = Field(..., description="Order side")
     type: Literal["market", "limit"] = Field(..., description="Order type")
     price: Optional[float] = Field(None, description="Limit price (required for limit orders)")
-    volume: float = Field(..., description="Order volume")
+    volume: Optional[float] = Field(None, description="Order volume in base units (e.g. BTC amount)")
+    volume_usd: Optional[float] = Field(None, description="Order notional in quote currency (USDT/USDC); converted server-side")
 
 
 class ActiveExchangeModel(BaseModel):
@@ -78,13 +89,36 @@ class ActivePairListModel(BaseModel):
     name: str = Field(..., description="Name of the PairList to activate")
 
 
+class StrategyModeModel(BaseModel):
+    """Request model for setting system mode."""
+
+    mode: Literal["live", "paper"] = Field(..., description="System mode: live or paper")
+
+
+class StrategyConfigModel(BaseModel):
+    """Request model for updating strategy configuration."""
+
+    mode: Optional[Literal["live", "paper"]] = Field(None, description="System mode")
+    autonomy_enabled: Optional[bool] = Field(None, description="Enable autonomous execution")
+    min_confidence_threshold: Optional[int] = Field(None, ge=0, le=100)
+    max_risk_tier: Optional[Literal["low", "medium", "high"]] = None
+    analysis_interval_hours: Optional[int] = Field(None, ge=1)
+    asset_whitelist: Optional[list[str]] = None
+    max_position_pct: Optional[float] = Field(None, gt=0, le=100)
+    max_daily_loss_pct: Optional[float] = Field(None, gt=0, le=100)
+    max_exchange_exposure_pct: Optional[float] = Field(None, gt=0, le=100)
+    cooldown_seconds: Optional[int] = Field(None, ge=0)
+    order_min_notional: Optional[float] = Field(None, gt=0)
+    order_max_notional: Optional[float] = Field(None, gt=0)
+
+
 def create_app(
     settings: Settings,
     db: aiosqlite.Connection,
     registry: ExchangeRegistry,
     fetcher: MarketDataFetcher,
     order_manager: OrderManager,
-    portfolio_tracker: PortfolioTracker,
+    portfolio_tracker: PortfolioTracker | None = None,
     guardrail_evaluator: RiskGuardrailEvaluator | None = None,
     cooldown_tracker: CooldownTracker | None = None,
     paper_simulator: PaperTradingSimulator | None = None,
@@ -293,9 +327,22 @@ def create_app(
 
     # Portfolio endpoint
     @app.get("/api/portfolio")
-    async def get_portfolio() -> JSONResponse:
-        """Get current portfolio snapshot."""
-        snapshot = await portfolio_tracker.get_snapshot()
+    async def get_portfolio(request: Request) -> JSONResponse:
+        """Get current portfolio snapshot.
+
+        Reads the PortfolioTracker from app.state so we use the same instance
+        that the lifespan initialized and called start() on. This avoids the
+        closure-capture pitfall where the create_app-constructed instance has
+        never loaded any balances.
+        """
+        tracker: PortfolioTracker | None = request.app.state.portfolio_tracker
+        if tracker is None:
+            return CustomJSONResponse(content={
+                "exchanges": {},
+                "total_usdt_value": "0",
+                "timestamp_ms": int(time.time() * 1000),
+            })
+        snapshot = await tracker.get_snapshot()
         return CustomJSONResponse(content={
             "exchanges": {
                 exchange: [
@@ -409,16 +456,128 @@ def create_app(
 
     # Order submission endpoint
     @app.post("/api/orders")
-    async def submit_order(order_data: OrderRequestModel) -> JSONResponse:
-        """Submit a new order."""
-        # Create OrderRequest
+    async def submit_order(request: Request, order_data: OrderRequestModel) -> JSONResponse:
+        """Submit a new order (paper or live based on system mode).
+
+        Volume can be supplied either as ``volume`` (base units) or ``volume_usd``
+        (quote-currency notional). When ``volume_usd`` is given, the server
+        converts it to base units using the current ticker price (market
+        orders) or the supplied limit price (limit orders).
+        """
+        evaluator: RiskGuardrailEvaluator | None = request.app.state.guardrail_evaluator
+        paper_sim: PaperTradingSimulator | None = request.app.state.paper_simulator
+        fetcher: MarketDataFetcher | None = request.app.state.fetcher
+
+        # Validate that exactly one of volume / volume_usd is provided
+        if order_data.volume is None and order_data.volume_usd is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide either 'volume' (base units) or 'volume_usd' (quote currency)",
+            )
+        if order_data.volume is not None and order_data.volume_usd is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide only one of 'volume' or 'volume_usd', not both",
+            )
+
+        # Resolve volume (in base units). If volume_usd is provided, convert it.
+        volume: Decimal
+        if order_data.volume_usd is not None:
+            usd = Decimal(str(order_data.volume_usd))
+            if usd <= Decimal("0"):
+                raise HTTPException(status_code=400, detail="volume_usd must be positive")
+
+            # Choose conversion price: limit price for limit orders, market ticker for market orders
+            if order_data.type == "limit":
+                if order_data.price is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Limit orders require a 'price' field for USD conversion",
+                    )
+                conv_price = Decimal(str(order_data.price))
+            else:
+                # Market order: fetch current ticker (cache first, then direct adapter)
+                normalized = order_data.symbol
+                if "/" not in normalized and normalized.endswith("USDT"):
+                    normalized = normalized[:-4] + "/USDT"
+                ticker = fetcher.get_ticker(normalized, order_data.exchange) if fetcher else None
+                if ticker is None and fetcher is not None and hasattr(fetcher, "_registry"):
+                    # Fallback: fetch directly from the exchange adapter
+                    adapter = fetcher._registry.get_active_adapter(order_data.exchange)
+                    if adapter is not None:
+                        try:
+                            ticker = await adapter.fetch_ticker(normalized)
+                        except Exception:
+                            ticker = None
+                if ticker is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No ticker available for {order_data.symbol} on {order_data.exchange}; cannot convert volume_usd",
+                    )
+                conv_price = ticker.price
+
+            if conv_price <= Decimal("0"):
+                raise HTTPException(status_code=400, detail=f"Invalid conversion price {conv_price}")
+
+            volume = (usd / conv_price).quantize(Decimal("0.00000001"))
+        else:
+            volume = Decimal(str(order_data.volume))
+            if volume <= Decimal("0"):
+                raise HTTPException(status_code=400, detail="volume must be positive")
+
+        # Check current system mode
+        mode = SystemMode.LIVE
+        if evaluator is not None:
+            mode = await evaluator.get_current_mode()
+
+        if mode == SystemMode.PAPER and paper_sim is not None:
+            # PAPER mode: use paper simulator
+            try:
+                if order_data.type == "market":
+                    result = await paper_sim.simulate_market_order(
+                        proposal_id=None,
+                        exchange=order_data.exchange,
+                        symbol=order_data.symbol,
+                        side=order_data.side,
+                        volume=volume,
+                    )
+                else:
+                    price = Decimal(str(order_data.price)) if order_data.price is not None else Decimal("0")
+                    result = await paper_sim.simulate_limit_order(
+                        proposal_id=None,
+                        exchange=order_data.exchange,
+                        symbol=order_data.symbol,
+                        side=order_data.side,
+                        price=price,
+                        volume=volume,
+                    )
+            except PaperTradeError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            return CustomJSONResponse(content={
+                "order_id": result.order_id,
+                "exchange_order_id": result.order_id,
+                "exchange": result.exchange,
+                "symbol": result.symbol,
+                "side": result.side,
+                "order_type": result.order_type,
+                "price": str(result.price),
+                "volume": str(result.volume),
+                "filled_volume": str(result.volume),
+                "status": result.status,
+                "created_at_ms": int(time.time() * 1000),
+                "updated_at_ms": int(time.time() * 1000),
+            })
+        elif mode == SystemMode.PAPER and paper_sim is None:
+            raise HTTPException(status_code=503, detail="Paper simulator not available")
+
+        # LIVE mode: use order manager
         order_request = OrderManager.OrderRequest(
             exchange=order_data.exchange,
             symbol=order_data.symbol,
             side=order_data.side,
             order_type=order_data.type,
             price=Decimal(str(order_data.price)) if order_data.price is not None else None,
-            volume=Decimal(str(order_data.volume)),
+            volume=volume,
             source="manual",
         )
 
@@ -706,13 +865,15 @@ def create_app(
         """Get paper trading summary.
 
         Returns total_realized_pnl, total_unrealized_pnl, open_positions,
-        total_trades, and daily_pnl.
+        total_trades, daily_pnl, plus paper cash info (initial_cash,
+        current_cash, position_value, total_balance).
         """
         simulator: PaperTradingSimulator | None = request.app.state.paper_simulator
         db: aiosqlite.Connection = request.app.state.db
 
         if simulator is not None:
             pnl_summary = await simulator.get_paper_pnl_summary()
+            cash = await simulator.get_cash()
             total_realized_pnl = pnl_summary.get("total_realized_pnl", 0.0)
             total_unrealized_pnl = pnl_summary.get("total_unrealized_pnl", 0.0)
             open_positions = pnl_summary.get("open_positions_count", 0)
@@ -722,6 +883,12 @@ def create_app(
             total_unrealized_pnl = 0.0
             open_positions = 0
             total_trades = 0
+            cash = {
+                "initial_cash": 0.0,
+                "current_cash": 0.0,
+                "position_value": 0.0,
+                "total_balance": 0.0,
+            }
 
         # Get today's daily P&L
         daily_pnl = 0.0
@@ -739,6 +906,114 @@ def create_app(
             "open_positions": open_positions,
             "total_trades": total_trades,
             "daily_pnl": daily_pnl,
+            "initial_cash": cash["initial_cash"],
+            "current_cash": cash["current_cash"],
+            "position_value": cash["position_value"],
+            "total_balance": cash["total_balance"],
+        })
+
+    # ---- Strategy Mode & Config Endpoints ----
+
+    @app.post("/api/strategy/mode")
+    async def update_strategy_mode(
+        request: Request,
+        body: StrategyModeModel,
+    ) -> JSONResponse:
+        """Switch system mode between live and paper."""
+        evaluator: RiskGuardrailEvaluator | None = request.app.state.guardrail_evaluator
+
+        if evaluator is None:
+            raise HTTPException(status_code=503, detail="Guardrail evaluator not available")
+
+        try:
+            from ..guardrails.evaluator import SystemMode
+            mode = SystemMode(body.mode)
+            await evaluator.set_mode(mode)
+
+            strategy_config = request.app.state.strategy_config
+            if strategy_config is not None:
+                strategy_config.mode = body.mode
+
+            return CustomJSONResponse(content={
+                "mode": body.mode,
+                "message": f"System mode switched to {body.mode}",
+            })
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid mode: {body.mode}")
+
+    @app.get("/api/strategy/mode")
+    async def get_strategy_mode(request: Request) -> JSONResponse:
+        """Get current system mode."""
+        evaluator: RiskGuardrailEvaluator | None = request.app.state.guardrail_evaluator
+
+        if evaluator is None:
+            raise HTTPException(status_code=503, detail="Guardrail evaluator not available")
+
+        mode = await evaluator.get_current_mode()
+        return CustomJSONResponse(content={"mode": mode.value})
+
+    @app.put("/api/strategy/config")
+    async def update_strategy_config(
+        request: Request,
+        body: StrategyConfigModel,
+    ) -> JSONResponse:
+        """Update strategy configuration fields."""
+        db: aiosqlite.Connection = request.app.state.db
+
+        updates = []
+        params = []
+
+        if body.mode is not None:
+            updates.append("mode = ?")
+            params.append(body.mode)
+        if body.autonomy_enabled is not None:
+            updates.append("autonomy_enabled = ?")
+            params.append(int(body.autonomy_enabled))
+        if body.min_confidence_threshold is not None:
+            updates.append("min_confidence_threshold = ?")
+            params.append(body.min_confidence_threshold)
+        if body.max_risk_tier is not None:
+            updates.append("max_risk_tier = ?")
+            params.append(body.max_risk_tier)
+        if body.analysis_interval_hours is not None:
+            updates.append("analysis_interval_hours = ?")
+            params.append(body.analysis_interval_hours)
+        if body.asset_whitelist is not None:
+            updates.append("asset_whitelist = ?")
+            params.append(json.dumps(body.asset_whitelist))
+        if body.max_position_pct is not None:
+            updates.append("max_position_pct = ?")
+            params.append(body.max_position_pct)
+        if body.max_daily_loss_pct is not None:
+            updates.append("max_daily_loss_pct = ?")
+            params.append(body.max_daily_loss_pct)
+        if body.max_exchange_exposure_pct is not None:
+            updates.append("max_exchange_exposure_pct = ?")
+            params.append(body.max_exchange_exposure_pct)
+        if body.cooldown_seconds is not None:
+            updates.append("cooldown_seconds = ?")
+            params.append(body.cooldown_seconds)
+        if body.order_min_notional is not None:
+            updates.append("order_min_notional = ?")
+            params.append(body.order_min_notional)
+        if body.order_max_notional is not None:
+            updates.append("order_max_notional = ?")
+            params.append(body.order_max_notional)
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        updates.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc))
+        params.append("default_long_term")
+
+        query = f"UPDATE strategy_configs SET {', '.join(updates)} WHERE name = ?"
+        await db.execute(query, params)
+        await db.commit()
+
+        return CustomJSONResponse(content={
+            "message": "Strategy config updated",
+            "updated_fields": len(updates) - 1,
         })
 
     # Serve static HTML page

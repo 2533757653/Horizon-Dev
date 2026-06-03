@@ -229,47 +229,17 @@ class RiskGuardrailEvaluator:
             )
 
     async def get_current_mode(self) -> SystemMode:
-        """Get the current system mode.
-
-        Checks for an active downgrade. If a downgrade guardrail event exists
-        that hasn't expired, returns COLLABORATIVE mode. Otherwise returns
-        the mode from strategy_config.
+        """Get the current system mode from database.
 
         Returns:
-            SystemMode: Current system mode.
+            SystemMode: Current system mode (LIVE or PAPER).
         """
         cursor = await self._db.execute(
-            """
-            SELECT downgrade_expires_at
-            FROM guardrail_events
-            WHERE downgrade_active = 1
-            ORDER BY created_at DESC
-            LIMIT 1
-            """
+            "SELECT mode FROM strategy_configs WHERE enabled = 1 LIMIT 1"
         )
         row = await cursor.fetchone()
-
-        if row is not None:
-            downgrade_expires_at = row["downgrade_expires_at"]
-            if downgrade_expires_at is not None:
-                # Parse the datetime
-                if isinstance(downgrade_expires_at, str):
-                    try:
-                        expires_at = datetime.fromisoformat(
-                            downgrade_expires_at.replace("Z", "+00:00")
-                        )
-                    except ValueError:
-                        return SystemMode(self._strategy_config.mode)
-                elif isinstance(downgrade_expires_at, datetime):
-                    expires_at = downgrade_expires_at
-                else:
-                    return SystemMode(self._strategy_config.mode)
-
-                # Check if still active
-                if expires_at > datetime.now(timezone.utc):
-                    return SystemMode.COLLABORATIVE
-
-        # No active downgrade, use strategy config mode
+        if row is not None and row["mode"]:
+            return SystemMode(row["mode"])
         return SystemMode(self._strategy_config.mode)
 
     async def set_mode(self, mode: SystemMode) -> None:
