@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, Optional
@@ -21,6 +22,27 @@ from ..guardrails.rules import StrategyConfig
 from ..marketdata.fetcher import MarketDataFetcher
 from ..ordermanager.manager import OrderManager, OrderSubmissionError
 from ..paper.simulator import PaperTradeError, PaperTradingSimulator
+from ..paper.stats import compute_trade_stats
+
+
+def _today_utc() -> str:
+    """Return today's date in UTC as 'YYYY-MM-DD' (matches SQLite DATE('now','utc'))."""
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+
+
+def _base_asset(symbol: str) -> str:
+    """Normalize a trading symbol to its base asset (e.g. 'BTC/USDT' -> 'BTC')."""
+    if not symbol:
+        return ""
+    s = symbol.upper()
+    for quote in ("USDT", "USDC", "USD", "BUSD"):
+        if s.endswith(quote) and not s.endswith(quote + quote):
+            s = s[: -len(quote)]
+            break
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    return s.strip("/") or symbol
 from ..portfolio.tracker import PortfolioTracker
 from ..datasource import KlineCache, DataSourceRegistry
 if TYPE_CHECKING:
@@ -912,6 +934,194 @@ def create_app(
             "total_balance": cash["total_balance"],
         })
 
+    @app.get("/api/paper/trades/stats")
+    async def get_paper_trades_stats(request: Request) -> JSONResponse:
+        """Aggregate statistics for closed and open paper trades.
+
+        Used by the released-trades stat cards in the main dashboard.
+        """
+        db: aiosqlite.Connection = request.app.state.db
+
+        cursor = await db.execute(
+            """
+            SELECT id, exchange, symbol, side, order_type, price, volume,
+                   notional_value, status, filled_at, paper_pnl,
+                   closed_by_side, closed_at, created_at
+            FROM paper_trades
+            """
+        )
+        rows = await cursor.fetchall()
+
+        trades = [
+            {
+                "id": row["id"],
+                "exchange": row["exchange"],
+                "symbol": row["symbol"],
+                "side": row["side"],
+                "order_type": row["order_type"],
+                "price": row["price"],
+                "volume": row["volume"],
+                "notional_value": row["notional_value"],
+                "status": row["status"],
+                "filled_at": row["filled_at"],
+                "paper_pnl": row["paper_pnl"],
+                "closed_by_side": row["closed_by_side"],
+                "closed_at": row["closed_at"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+        stats = compute_trade_stats(trades)
+        return CustomJSONResponse(content=stats)
+
+    @app.get("/api/portfolio/allocation")
+    async def get_portfolio_allocation(request: Request) -> JSONResponse:
+        """Return asset allocation breakdown for the portfolio page and balance panel.
+
+        Returns:
+            {
+                "total_value": float,
+                "allocations": [
+                    {"asset": "BTC", "value": float, "pct": float, "kind": "position"|"cash"},
+                    ...
+                ]
+            }
+        """
+        simulator: PaperTradingSimulator | None = request.app.state.paper_simulator
+
+        if simulator is None:
+            return CustomJSONResponse(content={"total_value": 0.0, "allocations": []})
+
+        cash = await simulator.get_cash()
+        positions = await simulator.get_paper_positions()
+
+        cash_value = float(cash.get("current_cash", 0.0))
+        position_values: dict[str, float] = {}
+        for p in positions:
+            symbol = p.get("symbol", "")
+            base = _base_asset(symbol)
+            current_price = float(p.get("current_price", 0.0))
+            volume = float(p.get("volume", 0.0))
+            value = current_price * volume
+            position_values[base] = position_values.get(base, 0.0) + value
+
+        total_value = cash_value + sum(position_values.values())
+
+        allocations: list[dict[str, Any]] = []
+        for asset, value in sorted(position_values.items(), key=lambda kv: -kv[1]):
+            allocations.append({
+                "asset": asset,
+                "value": value,
+                "pct": (value / total_value * 100.0) if total_value > 0 else 0.0,
+                "kind": "position",
+            })
+        if cash_value > 0 or not allocations:
+            allocations.append({
+                "asset": "USDT",
+                "value": cash_value,
+                "pct": (cash_value / total_value * 100.0) if total_value > 0 else 100.0,
+                "kind": "cash",
+            })
+
+        return CustomJSONResponse(content={
+            "total_value": total_value,
+            "allocations": allocations,
+        })
+
+    @app.get("/api/portfolio/equity-curve")
+    async def get_portfolio_equity_curve(request: Request) -> JSONResponse:
+        """Return cumulative equity curve from daily_pnl.
+
+        First point is initial_cash (today's "zero" reference); subsequent
+        points are initial_cash plus cumulative paper_pnl up to each date.
+        """
+        simulator: PaperTradingSimulator | None = request.app.state.paper_simulator
+        db: aiosqlite.Connection = request.app.state.db
+
+        initial_cash = 0.0
+        if simulator is not None:
+            cash = await simulator.get_cash()
+            initial_cash = float(cash.get("initial_cash", 0.0))
+
+        points: list[dict[str, Any]] = []
+        if db is not None:
+            cursor = await db.execute(
+                """
+                SELECT date, paper_pnl
+                FROM daily_pnl
+                ORDER BY date ASC
+                """
+            )
+            rows = await cursor.fetchall()
+            cumulative = initial_cash
+            for row in rows:
+                cumulative += float(row["paper_pnl"] or 0.0)
+                points.append({
+                    "date": row["date"],
+                    "value": cumulative,
+                })
+
+        # Always include the starting point so a chart can render
+        if not points:
+            points.append({"date": "today", "value": initial_cash})
+        else:
+            points.insert(0, {"date": "initial", "value": initial_cash})
+
+        return CustomJSONResponse(content={
+            "points": points,
+            "initial_cash": initial_cash,
+        })
+
+    @app.get("/api/portfolio/daily-change")
+    async def get_portfolio_daily_change(request: Request) -> JSONResponse:
+        """Return 24h P&L change for the main balance panel header.
+
+        Uses today's paper_pnl from daily_pnl vs yesterday's closing
+        paper_pnl to compute change_pnl. Change_pct is change_pnl /
+        (current_balance - change_pnl) for the proportion.
+        """
+        simulator: PaperTradingSimulator | None = request.app.state.paper_simulator
+        db: aiosqlite.Connection = request.app.state.db
+
+        if simulator is None or db is None:
+            return CustomJSONResponse(content={
+                "change_pct": 0.0,
+                "change_pnl": 0.0,
+                "previous_balance": 0.0,
+                "current_balance": 0.0,
+            })
+
+        cash = await simulator.get_cash()
+        current_balance = float(cash.get("total_balance", 0.0))
+
+        cursor = await db.execute(
+            """
+            SELECT date, paper_pnl FROM daily_pnl
+            WHERE date IN (DATE('now', 'utc', '-1 day'), DATE('now', 'utc'))
+            ORDER BY date ASC
+            """
+        )
+        rows = await cursor.fetchall()
+
+        today_pnl = 0.0
+        for row in rows:
+            if row["date"] == _today_utc():
+                today_pnl = float(row["paper_pnl"] or 0.0)
+        previous_balance = current_balance - today_pnl
+        change_pnl = today_pnl
+        change_pct = (
+            (change_pnl / previous_balance * 100.0)
+            if previous_balance > 0 else 0.0
+        )
+
+        return CustomJSONResponse(content={
+            "change_pct": change_pct,
+            "change_pnl": change_pnl,
+            "previous_balance": previous_balance,
+            "current_balance": current_balance,
+        })
+
     # ---- Strategy Mode & Config Endpoints ----
 
     @app.post("/api/strategy/mode")
@@ -1021,5 +1231,14 @@ def create_app(
     async def index():
         """Serve the main dashboard page."""
         return RedirectResponse(url="/static/index.html")
+
+    @app.get("/portfolio", response_class=HTMLResponse)
+    async def portfolio():
+        """Serve the portfolio analytics page."""
+        portfolio_path = os.path.join(
+            os.path.dirname(__file__), "static", "portfolio.html"
+        )
+        with open(portfolio_path, encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
 
     return app

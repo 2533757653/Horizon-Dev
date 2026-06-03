@@ -1,0 +1,92 @@
+/* Portfolio Analytics page */
+
+.portfolio-dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 20px;
+}
+
+.kpi-panel { flex: 0 0 auto; }
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+}
+.kpi-card {
+    background: var(--bg-elevated);
+    border-radius: 8px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border: 1px solid var(--border);
+}
+.kpi-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    letter-spacing: 0.5px;
+}
+.kpi-value {
+    font-size: 24px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+}
+.kpi-value.positive { color: var(--positive); }
+.kpi-value.negative { color: var(--negative); }
+.kpi-value.neutral { color: var(--text-primary); }
+
+.equity-chart-container {
+    width: 100%;
+    height: 360px;
+    position: relative;
+}
+
+.allocation-layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 32px;
+    align-items: center;
+    padding: 16px 4px;
+}
+.allocation-donut { width: 240px; height: 240px; }
+.allocation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.allocation-row {
+    display: grid;
+    grid-template-columns: 24px 100px 1fr 90px 60px;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--bg-elevated);
+    border-radius: 6px;
+    font-size: 13px;
+}
+.allocation-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+}
+.allocation-asset { font-weight: 600; font-family: var(--font-mono); }
+.allocation-bar {
+    height: 6px;
+    background: var(--bg-base);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.allocation-bar-fill { height: 100%; border-radius: 3px; }
+.allocation-value {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-weight: 600;
+}
+.allocation-pct {
+    text-align: right;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+}

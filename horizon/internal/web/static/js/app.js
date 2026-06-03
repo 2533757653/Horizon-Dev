@@ -3,7 +3,7 @@
 import { initKline, loadChart } from './kline.js';
 import { initPositions, renderPositions, updatePrices } from './positions.js';
 import { initOrderForm, setSymbol, showToast } from './orders.js';
-import { getExchanges, getGuardrailStatus, getGuardrailEvents, getPaperSummary, getPaperPositions, postStrategyMode, putStrategyConfig, getStrategyMode } from './api.js';
+import { getExchanges, getGuardrailStatus, getGuardrailEvents, getPaperSummary, getPaperPositions, getPaperTrades, getPaperTradeStats, getPortfolioAllocation, getPortfolioEquityCurve, getPortfolioDailyChange, postStrategyMode, putStrategyConfig, getStrategyMode, getPortfolio } from './api.js';
 
 const state = {
     symbol: 'BTCUSDT',
@@ -37,10 +37,12 @@ async function init() {
     await loadPaperTradingStats();
     await loadBalance();
     await loadGuardrailEvents();
+    await loadReleasedTrades();
 
     // Setup UI listeners
     setupChartControls();
     setupStatusIndicator();
+    setupTradeFilterListeners();
 
     // Start SSE stream
     startMarketStream();
@@ -428,10 +430,15 @@ async function loadBalance() {
         const hintEl = document.getElementById('balance-mode-hint');
         const totalEl = document.getElementById('total-balance');
         const assetsEl = document.getElementById('balance-assets');
+        const changeEl = document.getElementById('balance-24h-change');
 
         if (mode === 'paper') {
-            // Show paper balance from /api/paper/summary
-            const summary = await getPaperSummary();
+            // Show paper balance from /api/paper/summary + allocation breakdown
+            const [summary, allocation, dailyChange] = await Promise.all([
+                getPaperSummary(),
+                getPortfolioAllocation(),
+                getPortfolioDailyChange(),
+            ]);
             titleEl.textContent = 'Paper Trading Balance';
             hintEl.textContent = '(simulated)';
             const totalBalance = summary.total_balance || 0;
@@ -441,26 +448,10 @@ async function loadBalance() {
             const unrealizedPnl = summary.total_unrealized_pnl || 0;
             totalEl.textContent = `$${totalBalance.toFixed(2)}`;
             totalEl.className = totalBalance >= initialCash ? 'stat-value-large positive' : 'stat-value-large negative';
-            assetsEl.innerHTML = `
-                <div class="balance-row">
-                    <span class="asset-name">Initial Cash</span>
-                    <span class="asset-value">$${initialCash.toFixed(2)}</span>
-                </div>
-                <div class="balance-row">
-                    <span class="asset-name">Available Cash</span>
-                    <span class="asset-value">$${currentCash.toFixed(2)}</span>
-                </div>
-                <div class="balance-row">
-                    <span class="asset-name">Position Value</span>
-                    <span class="asset-value">$${positionValue.toFixed(2)}</span>
-                </div>
-                <div class="balance-row">
-                    <span class="asset-name">Unrealized P&L</span>
-                    <span class="asset-value ${unrealizedPnl >= 0 ? 'positive' : 'negative'}">
-                        ${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}
-                    </span>
-                </div>
-            `;
+            render24hChange(changeEl, dailyChange);
+            renderBalanceAssets(assetsEl, allocation, {
+                initialCash, currentCash, positionValue, unrealizedPnl,
+            });
         } else {
             // Show live balance from /api/portfolio
             const portfolio = await getPortfolio();
@@ -469,6 +460,8 @@ async function loadBalance() {
             const totalUsdt = parseFloat(portfolio.total_usdt_value || '0');
             totalEl.textContent = `$${totalUsdt.toFixed(2)}`;
             totalEl.className = 'stat-value-large';
+            changeEl.textContent = '';
+            changeEl.className = 'balance-24h-change';
             const exchanges = portfolio.exchanges || {};
             const rows = [];
             for (const [exchange, balances] of Object.entries(exchanges)) {
@@ -492,5 +485,203 @@ async function loadBalance() {
     }
 }
 
+function render24hChange(el, change) {
+    if (!el || !change) return;
+    const pct = change.change_pct || 0;
+    const pnl = change.change_pnl || 0;
+    if (!pnl) {
+        el.textContent = '24h: 0.00%';
+        el.className = 'balance-24h-change neutral';
+        return;
+    }
+    const arrow = pnl >= 0 ? '▲' : '▼';
+    el.textContent = `24h ${arrow} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% (${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`;
+    el.className = `balance-24h-change ${pnl >= 0 ? 'positive' : 'negative'}`;
+}
+
+function renderBalanceAssets(el, allocation, paper) {
+    if (!el) return;
+    const allocList = (allocation && allocation.allocations) || [];
+    const allocs = allocList.length
+        ? allocList
+        : [{ asset: 'USDT', value: paper.currentCash || 0, pct: 100, kind: 'cash' }];
+
+    const rows = allocs.map(a => {
+        const asset = (a.asset || 'USDT').toLowerCase();
+        const cssClass = ['btc', 'eth', 'sol', 'usdt'].includes(asset) ? asset : 'other';
+        return `
+            <div class="balance-row">
+                <span class="asset-name">${a.asset}</span>
+                <span class="asset-value">$${a.value.toFixed(2)} <span style="color:var(--text-secondary)">(${a.pct.toFixed(1)}%)</span></span>
+                <div class="allocation-bar">
+                    <div class="allocation-bar-fill ${cssClass}" style="width:${a.pct.toFixed(2)}%"></div>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    const paperSummary = `
+        <div class="balance-row" style="border-top:1px solid var(--border); margin-top:8px; padding-top:8px;">
+            <span class="asset-name" style="color:var(--text-secondary)">Initial Cash</span>
+            <span class="asset-value">$${paper.initialCash.toFixed(2)}</span>
+        </div>
+        <div class="balance-row">
+            <span class="asset-name" style="color:var(--text-secondary)">Unrealized P&L</span>
+            <span class="asset-value ${paper.unrealizedPnl >= 0 ? 'positive' : 'negative'}">
+                ${paper.unrealizedPnl >= 0 ? '+' : ''}$${paper.unrealizedPnl.toFixed(2)}
+            </span>
+        </div>
+    `;
+
+    el.innerHTML = rows + paperSummary;
+}
+
 // Refresh balance every 30s
 setInterval(loadBalance, 30000);
+
+// ===== Released Trades =====
+let releasedTradesCache = [];
+
+async function loadReleasedTrades() {
+    try {
+        const [trades, stats] = await Promise.all([
+            getPaperTrades(),
+            getPaperTradeStats(),
+        ]);
+        releasedTradesCache = trades || [];
+        renderTradeStatsCards(stats || {});
+        populateExchangeFilter(releasedTradesCache);
+        renderReleasedTrades();
+    } catch (err) {
+        console.error('Failed to load released trades:', err);
+    }
+}
+
+function renderTradeStatsCards(stats) {
+    const fmtPnl = (n) => `${n >= 0 ? '+' : ''}$${(n || 0).toFixed(2)}`;
+    const pnlClass = (n) => (n >= 0 ? 'positive' : 'negative');
+
+    const totalEl = document.getElementById('rt-total');
+    const totalPnlEl = document.getElementById('rt-total-pnl');
+    const winRateEl = document.getElementById('rt-win-rate');
+    const avgHoldEl = document.getElementById('rt-avg-holding');
+    const avgPnlEl = document.getElementById('rt-avg-pnl');
+    const winLossEl = document.getElementById('rt-win-loss');
+
+    if (totalEl) totalEl.textContent = stats.total_trades || 0;
+    if (totalPnlEl) {
+        totalPnlEl.textContent = fmtPnl(stats.total_pnl);
+        totalPnlEl.className = `stat-value ${pnlClass(stats.total_pnl)}`;
+    }
+    if (winRateEl) winRateEl.textContent = `${(stats.win_rate_pct || 0).toFixed(1)}%`;
+    if (avgHoldEl) avgHoldEl.textContent = formatHoldingSeconds(stats.avg_holding_seconds || 0);
+    if (avgPnlEl) {
+        avgPnlEl.textContent = fmtPnl(stats.avg_pnl);
+        avgPnlEl.className = `stat-value ${pnlClass(stats.avg_pnl)}`;
+    }
+    if (winLossEl) {
+        winLossEl.textContent = `${stats.wins || 0} / ${stats.losses || 0}`;
+        winLossEl.className = `stat-value ${(stats.wins || 0) >= (stats.losses || 0) ? 'positive' : 'negative'}`;
+    }
+}
+
+function formatHoldingSeconds(seconds) {
+    if (!seconds) return '--';
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+    if (seconds < 86400) return `${(seconds / 3600).toFixed(1)}h`;
+    return `${(seconds / 86400).toFixed(1)}d`;
+}
+
+function populateExchangeFilter(trades) {
+    const sel = document.getElementById('rt-filter-exchange');
+    if (!sel) return;
+    const exchanges = [...new Set(trades.map(t => t.exchange).filter(Boolean))].sort();
+    const current = sel.value;
+    sel.innerHTML = '<option value="">All</option>' +
+        exchanges.map(e => `<option value="${e}">${e}</option>`).join('');
+    sel.value = current;
+}
+
+function getActiveTradeFilters() {
+    return {
+        exchange: document.getElementById('rt-filter-exchange')?.value || '',
+        side: document.getElementById('rt-filter-side')?.value || '',
+        status: document.getElementById('rt-filter-status')?.value || '',
+    };
+}
+
+function applyTradeFilters(trades, filters) {
+    return trades.filter(t => {
+        if (filters.exchange && t.exchange !== filters.exchange) return false;
+        if (filters.side && t.side !== filters.side) return false;
+        if (filters.status === 'open' && t.closed_by_side) return false;
+        if (filters.status === 'closed' && !t.closed_by_side) return false;
+        return true;
+    });
+}
+
+function renderReleasedTrades() {
+    const container = document.getElementById('released-trades-body');
+    if (!container) return;
+    const filters = getActiveTradeFilters();
+    const filtered = applyTradeFilters(releasedTradesCache, filters);
+
+    if (filtered.length === 0) {
+        container.innerHTML = '<div class="table-row" style="grid-column:1 / -1; text-align:center; color:var(--text-secondary);">No released trades</div>';
+        return;
+    }
+
+    container.innerHTML = filtered.map(t => {
+        const isClosed = !!t.closed_by_side;
+        const pnl = t.paper_pnl || 0;
+        const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+        const sideClass = t.side === 'buy' ? 'long' : 'short';
+        const sideLabel = t.side === 'buy' ? 'LONG' : 'SHORT';
+        const entry = t.price != null ? `$${t.price.toFixed(2)}` : '--';
+        const exit = isClosed && t.closed_at
+            ? (() => {
+                // close price is approximated by t.paper_pnl / volume + entry for the side
+                if (!t.volume) return '--';
+                const direction = t.side === 'buy' ? 1 : -1;
+                const closePrice = (t.price || 0) + direction * (pnl / t.volume);
+                return `$${closePrice.toFixed(2)}`;
+            })()
+            : '--';
+        const holding = (() => {
+            if (!isClosed || !t.filled_at || !t.closed_at) return '--';
+            const filledMs = new Date(t.filled_at).getTime();
+            const closedMs = new Date(t.closed_at).getTime();
+            if (isNaN(filledMs) || isNaN(closedMs)) return '--';
+            return formatHoldingSeconds((closedMs - filledMs) / 1000);
+        })();
+        const time = t.created_at
+            ? new Date(t.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            : '--';
+        return `
+            <div class="table-row">
+                <span>${time}</span>
+                <span style="font-family:var(--font-mono)">${t.symbol || '--'}</span>
+                <span class="col-side ${sideClass}">${sideLabel}</span>
+                <span>${(t.volume || 0).toFixed(4)}</span>
+                <span style="font-family:var(--font-mono)">${entry}</span>
+                <span style="font-family:var(--font-mono)">${exit}</span>
+                <span>${t.exchange || '--'}</span>
+                <span>${t.order_type || '--'}</span>
+                <span class="rt-status-${isClosed ? 'closed' : 'open'}">${isClosed ? 'CLOSED' : 'OPEN'}</span>
+                <span class="rt-pnl ${pnlClass}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</span>
+                <span>${holding}</span>
+            </div>
+        `;
+    }).join('');
+}
+
+function setupTradeFilterListeners() {
+    ['rt-filter-exchange', 'rt-filter-side', 'rt-filter-status'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', renderReleasedTrades);
+    });
+}
+
+// Refresh released trades every 15s
+setInterval(loadReleasedTrades, 15000);

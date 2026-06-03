@@ -69,6 +69,22 @@ export async function getPaperTrades() {
     return response.trades;  // Extract array from wrapper
 }
 
+export async function getPaperTradeStats() {
+    return request('/paper/trades/stats');
+}
+
+export async function getPortfolioAllocation() {
+    return request('/portfolio/allocation');
+}
+
+export async function getPortfolioEquityCurve() {
+    return request('/portfolio/equity-curve');
+}
+
+export async function getPortfolioDailyChange() {
+    return request('/portfolio/daily-change');
+}
+
 export async function postStrategyMode(mode) {
     return request('/strategy/mode', {
         method: 'POST',

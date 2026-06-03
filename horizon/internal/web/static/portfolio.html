@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portfolio Analytics - Horizon</title>
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260601">
+    <link rel="stylesheet" href="/static/css/portfolio.css?v=20260601">
+</head>
+<body>
+    <div class="header">
+        <h1>Portfolio Analytics</h1>
+        <a href="/" class="header-link" target="_self">← Back to Dashboard</a>
+        <span class="status-dot" id="status-dot"></span>
+        <span class="last-update" id="last-update"></span>
+    </div>
+
+    <div class="dashboard portfolio-dashboard">
+        <div class="panel kpi-panel">
+            <div class="kpi-grid">
+                <div class="kpi-card">
+                    <span class="kpi-label">Total Value</span>
+                    <span id="kpi-total" class="kpi-value">$0.00</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-label">Initial Cash</span>
+                    <span id="kpi-initial" class="kpi-value">$0.00</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-label">24h P&L</span>
+                    <span id="kpi-24h" class="kpi-value neutral">$0.00</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-label">Total P&L</span>
+                    <span id="kpi-total-pnl" class="kpi-value neutral">$0.00</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <h2>Equity Curve</h2>
+                <span id="equity-range" class="panel-link">--</span>
+            </div>
+            <div id="equity-chart-container" class="equity-chart-container">
+                <div id="equity-chart-status" class="panel-status">Loading equity curve...</div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <h2>Asset Allocation</h2>
+            </div>
+            <div class="allocation-layout">
+                <div id="allocation-donut" class="allocation-donut"></div>
+                <div id="allocation-list" class="allocation-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/lightweight-charts.min.js?v=20260601"></script>
+    <script type="module" src="/static/js/portfolio.js?v=20260601"></script>
+</body>
+</html>

@@ -9,6 +9,7 @@
 <body>
     <div class="header">
         <h1>Horizon Trading Platform</h1>
+        <a href="/portfolio" class="header-link" target="_self">Portfolio Analytics</a>
         <span class="status-dot" id="status-dot"></span>
         <span class="last-update" id="last-update"></span>
 
@@ -107,6 +108,79 @@
             </div>
         </div>
 
+        <div class="panel released-trades-panel">
+            <div class="panel-header">
+                <h2>Released Trades</h2>
+                <a href="/portfolio" class="panel-link" target="_self">View analytics →</a>
+            </div>
+            <div class="released-stats-grid">
+                <div class="stat-card">
+                    <span class="stat-label">Total Trades</span>
+                    <span id="rt-total" class="stat-value">0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Total P&L</span>
+                    <span id="rt-total-pnl" class="stat-value">$0.00</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Win Rate</span>
+                    <span id="rt-win-rate" class="stat-value">0%</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Avg Holding</span>
+                    <span id="rt-avg-holding" class="stat-value">--</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Avg P&L</span>
+                    <span id="rt-avg-pnl" class="stat-value">$0.00</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Wins / Losses</span>
+                    <span id="rt-win-loss" class="stat-value">0 / 0</span>
+                </div>
+            </div>
+            <div class="released-filters">
+                <label>
+                    Exchange
+                    <select id="rt-filter-exchange">
+                        <option value="">All</option>
+                    </select>
+                </label>
+                <label>
+                    Side
+                    <select id="rt-filter-side">
+                        <option value="">All</option>
+                        <option value="buy">Long</option>
+                        <option value="sell">Short</option>
+                    </select>
+                </label>
+                <label>
+                    Status
+                    <select id="rt-filter-status">
+                        <option value="">All</option>
+                        <option value="open">Open</option>
+                        <option value="closed">Closed</option>
+                    </select>
+                </label>
+            </div>
+            <div class="released-trades-table">
+                <div class="table-header rt-cols">
+                    <span>Time</span>
+                    <span>Symbol</span>
+                    <span>Side</span>
+                    <span>Qty</span>
+                    <span>Entry</span>
+                    <span>Exit</span>
+                    <span>Exchange</span>
+                    <span>Type</span>
+                    <span>Status</span>
+                    <span>P&L</span>
+                    <span>Holding</span>
+                </div>
+                <div id="released-trades-body" class="rt-cols-table"></div>
+            </div>
+        </div>
+
         <div class="balance-panel">
             <div class="panel-header">
                 <h2 id="balance-title">Account Balance</h2>
@@ -116,6 +190,7 @@
                 <div class="balance-total">
                     <span class="stat-label">Total Portfolio Value</span>
                     <span id="total-balance" class="stat-value-large">$0.00</span>
+                    <span id="balance-24h-change" class="balance-24h-change"></span>
                 </div>
                 <div id="balance-assets" class="balance-assets"></div>
             </div>
