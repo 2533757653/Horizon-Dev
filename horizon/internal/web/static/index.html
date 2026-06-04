@@ -230,6 +230,20 @@
             </div>
         </div>
     </div>
+
+    <!-- AI Co-Pilot floating panel -->
+    <div id="copilot-panel" class="copilot-panel collapsed">
+        <div class="copilot-header">
+            <button id="copilot-toggle" class="copilot-toggle">AI Co-Pilot</button>
+            <select id="copilot-session-select" class="copilot-session-select"></select>
+            <button id="copilot-new-btn" class="btn-mini">+ New</button>
+        </div>
+        <div id="copilot-messages" class="copilot-messages"></div>
+        <div class="copilot-input-row">
+            <textarea id="copilot-input" rows="2" placeholder="Ask anything... e.g. 'BTC now can buy?'"></textarea>
+            <button id="copilot-send" class="btn-primary">Send</button>
+        </div>
+    </div>
     <div id="toast-container"></div>
     <div id="modal-overlay" class="modal-overlay hidden"></div>
     <script type="module" src="/static/js/app.js?v=20260601"></script>
