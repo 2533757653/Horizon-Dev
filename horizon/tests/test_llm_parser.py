@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -574,7 +575,7 @@ class TestLLMResponseParser:
     # ===== TradeProposal Properties Tests =====
 
     def test_proposal_is_expired(self, parser, market_snapshot, portfolio_snapshot, technical_context):
-        """Test is_expired property."""
+        """Test is_expired method (time + price drift)."""
         raw = json.dumps({
             "analysis_summary": "Test",
             "confidence_explanation": "Test",
@@ -595,7 +596,11 @@ class TestLLMResponseParser:
         proposals = parser.parse(raw, market_snapshot, portfolio_snapshot, technical_context)
 
         assert len(proposals) == 1
-        assert proposals[0].is_expired is False
+        # market snapshot sets proposed_price=95000.0 with default 3% drift threshold;
+        # passing 96000 is within bounds so the proposal is not expired.
+        assert proposals[0].is_expired(Decimal("96000")) is False
+        # And it must not be time-expired (just created, default 24h window)
+        assert proposals[0].is_time_expired is False
 
     def test_proposal_is_long(self, parser, market_snapshot, portfolio_snapshot, technical_context):
         """Test is_long property."""

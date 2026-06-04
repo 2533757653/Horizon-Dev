@@ -64,8 +64,14 @@ class TradeProposal:
     action_type: str = "open"  # one of: open, close, reduce
 
     @property
-    def is_expired(self) -> bool:
-        """Check if the proposal has expired."""
+    def is_time_expired(self) -> bool:
+        """Check if the proposal has expired based on time only (no price check).
+
+        Note: For the full expiry check (time OR price drift), use
+        ``TradeProposal.is_expired(current_price)`` defined in
+        ``horizon.internal.proposals.models`` — that is the canonical
+        contract used by the queue/scanner.
+        """
         return datetime.now(timezone.utc) > self.expires_at
 
     @property
