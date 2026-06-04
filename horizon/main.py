@@ -33,6 +33,7 @@ from horizon.internal.llm.client import (
     build_anthropic_client,
     load_llm_credentials,
 )
+from horizon.internal.llm.copilot import CoPilotEngine
 from horizon.internal.llm.engine import LLMStrategyEngine
 from horizon.internal.llm.scheduler import LLMScheduler
 from horizon.internal.marketdata.fetcher import MarketDataFetcher
@@ -306,6 +307,24 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         llm_scheduler = LLMScheduler(llm_engine, interval_seconds=8 * 3600, run_on_start=False)
         logger.info("LLMStrategyEngine + LLMScheduler initialized")
 
+        # Co-Pilot engine (multi-turn human-initiated chat)
+        try:
+            llm_model = load_llm_credentials().model
+        except LLMCredentialsError:
+            llm_model = "claude-3-5-sonnet-20241022"
+        copilot = CoPilotEngine(
+            db=db,
+            anthropic_client=anthropic_client,
+            registry=registry,
+            fetcher=fetcher,
+            indicator_calculator=indicator_calculator,
+            portfolio_tracker=portfolio_tracker,
+            model_name=llm_model,
+        )
+        logger.info("CoPilotEngine initialized")
+    else:
+        copilot = None
+
     # Store components in app state
     application.state.db = db
     application.state.registry = registry
@@ -323,6 +342,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     application.state.llm_engine = llm_engine
     application.state.llm_scheduler = llm_scheduler
     application.state.indicator_calculator = indicator_calculator
+    application.state.copilot = copilot
 
     # 11. Start background tasks
 
