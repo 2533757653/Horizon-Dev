@@ -4,6 +4,9 @@ import { initKline, loadChart } from './kline.js';
 import { initPositions, renderPositions, updatePrices } from './positions.js';
 import { initOrderForm, setSymbol, showToast } from './orders.js';
 import { getExchanges, getGuardrailStatus, getGuardrailEvents, getPaperSummary, getPaperPositions, getPaperTrades, getPaperTradeStats, getPortfolioAllocation, getPortfolioEquityCurve, getPortfolioDailyChange, postStrategyMode, putStrategyConfig, getStrategyMode, getPortfolio } from './api.js';
+import { initProposals } from './proposals.js';
+import { initCoPilot } from './copilot.js';
+import { initStrategyConfig } from './strategy_config.js';
 
 const state = {
     symbol: 'BTCUSDT',
@@ -27,6 +30,25 @@ async function init() {
         document.getElementById('order-form'),
         getExchanges
     );
+
+    // Init new LLM modules
+    await initProposals(
+        document.getElementById('proposals-table-container'),
+        document.getElementById('trigger-analysis-btn'),
+        document.getElementById('proposal-count-badge'),
+    );
+
+    await initCoPilot({
+        panel: document.getElementById('copilot-panel'),
+        toggleBtn: document.getElementById('copilot-toggle'),
+        messages: document.getElementById('copilot-messages'),
+        input: document.getElementById('copilot-input'),
+        sendBtn: document.getElementById('copilot-send'),
+        sessionSelect: document.getElementById('copilot-session-select'),
+        newBtn: document.getElementById('copilot-new-btn'),
+    });
+
+    await initStrategyConfig(document.getElementById('strategy-config-btn'));
 
     // Load initial data
     await loadChart(state.symbol, state.timeframe);
@@ -418,6 +440,7 @@ window.confirmSwitchMode = confirmSwitchMode;
 window.closeModal = closeModal;
 window.toggleAutonomy = toggleAutonomy;
 window.showCooldownModal = showCooldownModal;
+window.showToast = showToast;
 
 // Bootstrap
 document.addEventListener('DOMContentLoaded', init);
