@@ -1333,6 +1333,47 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(e))
         return CustomJSONResponse(p.to_dict())
 
+    # =========================================================================
+    # LLM history + manual trigger + Strategy config GET (3)
+    # =========================================================================
+
+    @app.get("/api/llm/history")
+    async def llm_history(limit: int = Query(50, ge=1, le=200)) -> JSONResponse:
+        """Return recent LLM analysis runs (most recent first)."""
+        cursor = await db.execute(
+            "SELECT id, strategy_config_id, triggered_at, completion_status, "
+            "latency_ms, token_count_input, token_count_output, "
+            "parsed_proposals_count, error_message "
+            "FROM llm_analysis_history ORDER BY triggered_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return CustomJSONResponse({"history": [dict(r) for r in rows]})
+
+    @app.post("/api/llm/trigger")
+    async def trigger_llm_now() -> JSONResponse:
+        """Manually trigger one LLM analysis cycle."""
+        scheduler = getattr(app.state, "llm_scheduler", None)
+        if scheduler is None:
+            raise HTTPException(status_code=503, detail="LLM scheduler not running")
+        result = await scheduler.trigger_now()
+        return CustomJSONResponse({
+            "proposals_generated": len(result.proposals) if result else 0,
+            "analysis_summary": result.market_analysis_summary if result else "",
+            "confidence_explanation": result.confidence_explanation if result else "",
+        })
+
+    @app.get("/api/strategy/config")
+    async def get_strategy_config() -> JSONResponse:
+        """Return the currently active strategy configuration row."""
+        cursor = await db.execute(
+            "SELECT * FROM strategy_configs WHERE enabled = 1 LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="no active strategy config")
+        return CustomJSONResponse(dict(row))
+
     # Serve static HTML page
     @app.get("/")
     async def index():
