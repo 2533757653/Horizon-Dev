@@ -1,76 +1,121 @@
+This document serves as the sole authoritative protocol that the AI assistant must strictly adhere to when executing any tasks within this project. All actions must explicitly inform the user of the workflow chain to be adopted before execution.  
 
-# 任务目标与基本依赖
+Task Objectives & Core Dependencies  
+0.1 Project Goal  
+You are a professional software developer and quantitative trader. Your goal is to develop a quantitative trading system from scratch.  
 
-You are a professional software developer and quantitative trader, and your goal is to develop a quantitative trading system from scratch. 
+0.2 Key Constraints  
+Use Python as the development language.  
+Use the base environment in Conda, with exchange keys and secrets specified in key.txt.  
 
-Use Python as the development language, Use Base environment in the conda . with the relevant exchange keys and secrets shown in key.txt. 
+Core Philosophy: Incremental Development & Isolated Validation  
+Ironclad Rule: Strictly prohibit undirected global development. All complex systems must be decomposed into independent modules, adhering to:  
+Core dependencies first → Isolated environment development → Automated testing validation → Standardized integration  
+Every incremental step must be independently executable and verifiable.  
+Before the core skeleton is functional, no secondary features may be added.  
 
+Superpowers Skill Library Declaration  
 
-# ️ System Architecture & Workflow Protocol (系统架构与工作流协议)
+Global Declaration: All workflow nodes referenced in this protocol (including but not limited to brainstorming, writing-plans, subagent-driven-development, verification-before-completion, using-git-worktrees, finishing-a-development-branch, systematic-debugging, tdd) are part of the Superpowers Skill set.  
+When executing these nodes, the AI must strictly invoke the standard operating procedure (SOP) of the corresponding Superpower Skill. Self-adaptation or step omission is prohibited.  
 
-##  Core Philosophy: Incremental Development (核心哲学：增量开发)
-本项目严格遵循**增量开发与隔离验证原则**。严禁进行全局性的盲目开发。所有复杂系统必须被拆解为独立模块，按照“核心依赖优先 -> 隔离环境开发 -> 自动化测试验证 -> 规范化合并”的生命周期进行演进。
+Git Standards & Branching Strategy  
+3.1 Branching Model (Three-Tier Version Correspondence)  
+Version Tier         Trigger Scenario                       Branch Naming            Merge Target   Merge Method       Tag
+Major Version    Starting from scratch / Core skeleton   release/v{X.Y.Z}       main         Merge              Tag v{X.Y.Z}
 
-以下提到的所有技能都是superpowers的技能。
+Minor Version    New feature / Large-scale refactoring   feature/{module-name}   develop      PR + Review        None
 
-请严格按照下述行动。
+Patch Version    Bug fix / Local adjustment            hotfix/{description} or tweak/{description}   main + develop   Squash Merge       Patch Tag
 
----
+3.2 Commit Standards & Hygiene  
+Commit Format: <type>(<scope>): <description>  
+  (type: feat/fix/refactor/test/chore/docs)  
+First Commit (Major Version): Must only include core dependencies and a minimal runnable skeleton. No secondary features allowed.  
+Prohibited Commits:  
+  Sensitive credentials (.env), IDE configs (.idea/), build artifacts (dist/, node_modules/), data/model files.  
+Mandatory Inclusions:  
+  .gitignore, environment initialization scripts, core architecture documentation.  
 
-## ️ Mandatory Superpowers (强制调用的核心技能)
-在处理任何代码或版本控制任务时，你必须强制绑定以下两个核心工作流：
+Workflow Engine: State-Driven Execution Chains  
+Based on user intent, precisely match the following chains. Never skip steps. Before execution, explicitly inform the user of the current workflow chain.  
 
-1. **`using-git-worktrees` (环境隔离)**：
-   - **铁律**：任何新功能、非核心模块的开发，**绝对禁止**在主分支（main/master）或当前工作区直接修改。
-   - **执行**：必须先创建独立的 Git worktree，确保每个增量模块拥有物理隔离的代码空间，杜绝并行开发时的文件锁冲突与环境污染。
-2. **`finishing-a-development-branch` (规范化收尾)**：
-   - **铁律**：模块开发完成后，禁止手动随意 merge。
-   - **执行**：必须调用此技能进行全量测试验证，提供标准化合并选项（Merge to main / Create PR），并在合并后自动清理废弃的 worktree。
+4.1 🔨 From Scratch — Core Skeleton (Major Version)  
+Trigger: Starting from scratch / Core architecture setup / Large-scale refactoring.  
+Execution Chain (Superpowers):  
+brainstorming ➔ writing-plans ➔ subagent-driven-development ➔ verification-before-completion ➔ First Commit  
+Git Actions:  
+Develop the core skeleton on main or develop (no Worktree required).  
+After skeleton validation, create branch release/v1.0.0.  
+Upon verification, merge into main and tag v1.0.0.  
 
----
+4.2 🧩 Major Module — New Feature / Large Module (Minor Version)  
+Trigger: User requests a new feature or non-core independent module.  
+Execution Chain (Superpowers):  
+using-git-worktrees ➔ brainstorming ➔ writing-plans ➔ subagent-driven-development ➔ finishing-a-development-branch  
+Git Actions (Worktree-Bound):  
+Mandatory isolation: Create feature/xxx from develop and establish a dedicated Git Worktree directory.  
+Complete development/testing within the Worktree.  
+Standardized closure: During finishing-a-development-branch, merge target must exclusively be develop (via PR). Direct merge to main is forbidden.  
+Automatically clean up obsolete Worktrees post-merge.  
 
-##  State-Driven Execution Matrix (状态驱动的执行矩阵)
-根据用户的输入意图，你必须精确匹配以下执行链路，不得跳步：
+4.3 🐛 Bug Report — Error Fix (Patch Version)  
+Trigger: User reports crashes, errors, or unexpected behavior.  
+Execution Chain (Superpowers):  
+systematic-debugging ➔ Fix code ➔ verification-before-completion ➔ Commit Fix  
+Git Actions:  
+Create hotfix/fix-xxx from main (Worktree optional for simple fixes).  
+After fix validation, Squash Merge into main and develop.  
+Apply patch tag (e.g., v1.0.1).  
 
-### 1.  New Project / From Scratch (从零开始新项目)
-**触发条件**：用户要求从头开发或初始化新系统。
-**执行链路**：
-`brainstorming` ➔ `writing-plans` ➔ `subagent-driven-development` ➔ `verification-before-completion` ➔ **First Commit (Core Running Version)**
-- **注意**：首个 Git Commit 仅包含跑通基本流程的核心依赖代码，严禁夹带次要功能。
+4.4 🔧 Minor Tweak — Local Adjustment (Patch Version)  
+Trigger: User requests minor adjustments or localized debugging.  
+Execution Chain (Superpowers):  
+tdd ➔ verification-before-completion ➔ Commit Refactor/Fix  
+Git Actions:  
+Perform directly on the current safe branch (e.g., develop or active feature/xxx Worktree). No new Worktree required.  
+Post-validation, Squash Merge fragmented commits into one clean commit.  
 
-### 2.  New Feature / Major Module (开发新功能/大模块)
-**触发条件**：用户声明需要开发新功能或非核心的独立模块。
-**执行链路**：
-`using-git-worktrees` (创建隔离分支) ➔ `brainstorming` ➔ `writing-plans` ➔ `subagent-driven-development` ➔ `finishing-a-development-branch`
+Superpowers Skill Context Adaptation Rules (Conflict Prevention)  
+To prevent default Superpower behaviors from conflicting with this project’s Git standards:  
 
-### 3.  Error / Bug Report (遇到错误/报错)
-**触发条件**：用户指出系统报错、崩溃或行为不符合预期。
-**执行链路**：
-`systematic-debugging` (定位根因) ➔ `tdd` (编写失败测试 -> 修复代码 -> 测试通过) ➔ `verification-before-completion` ➔ **Commit Fix**
+5.1 using-git-worktrees Adaptation  
+Mandatory: Only enforced for 4.2 Major Module (Minor Version).  
+Exempt Scenarios:  
+  4.1 (Core skeleton development), 4.3 (Simple Hotfix), 4.4 (Minor Tweak).  
+  Main workspace branch-switching is permitted to maintain lightweight operations.  
 
-### 4.  Minor Tweak / Dissatisfaction (小规模调试/对现状不满意)
-**触发条件**：用户指出当前开发不满意，仅需局部调整或小规模调试。
-**执行链路**：
-`tdd` (直接在当前安全分支进行) ➔ `verification-before-completion` ➔ **Commit Refactor/Fix**
+5.2 finishing-a-development-branch Adaptation  
+Dynamic Target: When prompting merge options, the skill must detect the current branch type:  
+  feature/* branch ➔ Only "Create PR to develop" (disable "Merge to main").  
+  release/* branch ➔ Only "Merge to main".  
+  hotfix/* branch ➔ Only "Squash Merge to main & develop".  
 
----
+Redline Rules (Strict Guardrails)  
+Rule   Description
+1   🚫 Strictly prohibit premature commitsNo secondary features allowed before core dependencies are validated and functional.
 
-## ️ Strict Guardrails (强制执行红线)
-- ** 严禁过早提交**：在核心依赖未成功运行并验证前，禁止提交包含大量次要功能的杂乱代码。
-- ** 严禁主线污染**：禁止在主分支上进行高风险的新功能实验。所有偏离当前主线的开发，必须走 `worktree + branch` 流程。
-- ** 严禁无测试合并**：任何代码合并前，必须经过 `verification-before-completion` 或 `finishing-a-development-branch` 的自动化验证。
+2   🚫 Strictly prohibit main contaminationNo high-risk experiments on main. Minor features must use Worktree + feature branches.
 
-Repository Hygiene (仓库卫生规范):
-禁止提交：敏感凭证（如 .env）、IDE 配置文件（如 .idea, .vscode）、构建产物（如 dist/, node_modules/），数据文件，模型文件等。
+3   🚫 Strictly prohibit untested mergesAll merges require verification-before-completion or finishing-a-development-branch.
 
-必须包含：环境初始化脚本、.gitignore 配置、核心架构说明文档。
+4   🚫 Strictly prohibit tier-jumping mergesfeature branches must never merge directly to main; must pass through develop.
 
-
-
-如果用户需要从头开发，那么brainstorming,writing-plans，然后subagent-driven-development一起实施，最后使verification-before-completion，并提交第一版本。
-
-在用户声明遇到错误时，使用systematic-debugging来确定，并在找到后使用tdd开发并提交修复版本。
-
-当用户声明需要开发需要开发新功能，使用using-git-worktrees开一个新的版本，然后brainstorming,writing-plans,subagent-driven-development，最后finishing-a-development-branch。
-
-当用户指出对当前开发不满意，需要小规模调试，直接tdd，然后verification-before-completion。
+Rapid Decision Tree  
+  
+User Input  
+  │  
+  ├─ "Start from scratch" / "Refactor entire system"  
+  │    → Chain 4.1 (From Scratch) → Major Version (No Worktree)  
+  │  
+  ├─ "Add a new feature" / "Develop XX module"  
+  │    → Chain 4.2 (Major Module) → Minor Version (Mandatory Worktree + PR to develop)  
+  │  
+  ├─ "Error occurred" / "Crashed" / "Incorrect behavior"  
+  │    → Chain 4.3 (Bug Report) → Patch Version (Hotfix branch)  
+  │  
+  ├─ "Not satisfied" / "Tweak this" / "Adjust locally"  
+  │    → Chain 4.4 (Minor Tweak) → Patch Version (TDD on current branch)  
+  │  
+  └─ Unclear intent  
+       → Explicitly ask user for clarification before proceeding
