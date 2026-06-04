@@ -134,6 +134,31 @@ class StrategyConfigModel(BaseModel):
     order_max_notional: Optional[float] = Field(None, gt=0)
 
 
+class ApproveProposalModel(BaseModel):
+    """Request model for approving a proposal."""
+
+    approved_by: str = Field(..., description="Identifier of approver")
+
+
+class RejectProposalModel(BaseModel):
+    """Request model for rejecting a proposal."""
+
+    rejected_by: str = Field(..., description="Identifier of rejecter")
+    reason: Optional[str] = Field(None, description="Optional rejection reason")
+
+
+class CreateCoPilotSessionModel(BaseModel):
+    """Request model for creating a new Co-Pilot session."""
+
+    title: Optional[str] = None
+
+
+class SendCoPilotMessageModel(BaseModel):
+    """Request model for sending a user message in a Co-Pilot session."""
+
+    text: str = Field(..., min_length=1, max_length=8000)
+
+
 def create_app(
     settings: Settings,
     db: aiosqlite.Connection,
@@ -1225,6 +1250,88 @@ def create_app(
             "message": "Strategy config updated",
             "updated_fields": len(updates) - 1,
         })
+
+    # =========================================================================
+    # Proposals endpoints (5)
+    # =========================================================================
+
+    @app.get("/api/proposals")
+    async def list_proposals(
+        status: Optional[str] = Query(None),
+        limit: int = Query(50, ge=1, le=200),
+    ) -> JSONResponse:
+        """List trade proposals filtered by status."""
+        queue = getattr(app.state, "proposal_queue", None)
+        if queue is None:
+            raise HTTPException(status_code=503, detail="Proposal queue not running")
+        from ..proposals.models import ProposalStatus
+        status_filter = None
+        if status:
+            try:
+                status_filter = ProposalStatus(status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"invalid status '{status}'")
+        proposals = await queue.get_proposals(status=status_filter, limit=limit)
+        return CustomJSONResponse({
+            "proposals": [p.to_dict() for p in proposals],
+            "count": len(proposals),
+        })
+
+    @app.get("/api/proposals/stats")
+    async def proposal_stats() -> JSONResponse:
+        """Get aggregate proposal counts by status."""
+        queue = getattr(app.state, "proposal_queue", None)
+        if queue is None:
+            raise HTTPException(status_code=503, detail="Proposal queue not running")
+        return CustomJSONResponse(await queue.get_stats())
+
+    @app.get("/api/proposals/{proposal_id}")
+    async def get_proposal_detail(proposal_id: str) -> JSONResponse:
+        """Get full details for a single proposal."""
+        queue = getattr(app.state, "proposal_queue", None)
+        if queue is None:
+            raise HTTPException(status_code=503, detail="Proposal queue not running")
+        p = await queue.get_proposal(proposal_id)
+        if p is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        return CustomJSONResponse(p.to_dict())
+
+    @app.post("/api/proposals/{proposal_id}/approve")
+    async def approve_proposal(proposal_id: str, body: ApproveProposalModel) -> JSONResponse:
+        """Approve and execute a proposal."""
+        queue = getattr(app.state, "proposal_queue", None)
+        if queue is None:
+            raise HTTPException(status_code=503, detail="Proposal queue not running")
+        from ..proposals.queue import (
+            ProposalNotFoundError, InvalidProposalStateError,
+            ProposalExpiredError, InvalidSystemModeError,
+        )
+        try:
+            p = await queue.approve(proposal_id, body.approved_by)
+        except ProposalNotFoundError:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        except InvalidProposalStateError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except ProposalExpiredError as e:
+            raise HTTPException(status_code=410, detail=str(e))
+        except InvalidSystemModeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return CustomJSONResponse(p.to_dict())
+
+    @app.post("/api/proposals/{proposal_id}/reject")
+    async def reject_proposal(proposal_id: str, body: RejectProposalModel) -> JSONResponse:
+        """Reject a proposal with optional reason."""
+        queue = getattr(app.state, "proposal_queue", None)
+        if queue is None:
+            raise HTTPException(status_code=503, detail="Proposal queue not running")
+        from ..proposals.queue import ProposalNotFoundError, InvalidProposalStateError
+        try:
+            p = await queue.reject(proposal_id, body.rejected_by, body.reason or "")
+        except ProposalNotFoundError:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        except InvalidProposalStateError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return CustomJSONResponse(p.to_dict())
 
     # Serve static HTML page
     @app.get("/")
