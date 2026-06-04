@@ -555,6 +555,15 @@ def main() -> None:
         port=settings.app.port,
         log_level=settings.app.log_level.lower(),
         reload=False,
+        # Bound the time uvicorn waits for in-flight keep-alive connections
+        # to drain on Ctrl+C. Without this, uvicorn's `Server.shutdown()`
+        # awaits `_wait_tasks_to_complete()` with timeout=None — any active
+        # HTTP client (SSE subscribers, the frontend dashboard's polling
+        # loop) holds a keep-alive connection open, the wait never finishes,
+        # the lifespan's post-yield shutdown code is never reached, and the
+        # process never exits. 5s is long enough for one in-flight request
+        # to complete, short enough to feel responsive.
+        timeout_graceful_shutdown=5,
     )
 
 
