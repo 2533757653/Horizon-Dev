@@ -104,3 +104,80 @@ export async function putStrategyConfig(config) {
         body: JSON.stringify(config),
     });
 }
+
+// ===== Proposals =====
+export async function getProposals(status = null, limit = 50) {
+    const qs = new URLSearchParams();
+    if (status) qs.set('status', status);
+    qs.set('limit', String(limit));
+    return request(`/proposals?${qs}`);
+}
+
+export async function getProposal(id) {
+    return request(`/proposals/${encodeURIComponent(id)}`);
+}
+
+export async function approveProposal(id, approved_by = 'dashboard_user') {
+    return request(`/proposals/${encodeURIComponent(id)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved_by }),
+    });
+}
+
+export async function rejectProposal(id, rejected_by = 'dashboard_user', reason = '') {
+    return request(`/proposals/${encodeURIComponent(id)}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rejected_by, reason }),
+    });
+}
+
+export async function getProposalStats() {
+    return request('/proposals/stats');
+}
+
+// ===== LLM History + Trigger =====
+export async function getLLMHistory(limit = 50) {
+    return request(`/llm/history?limit=${limit}`);
+}
+
+export async function triggerLLMAnalysis() {
+    return request('/llm/trigger', { method: 'POST' });
+}
+
+// ===== Strategy Config GET =====
+export async function getStrategyConfig() {
+    return request('/strategy/config');
+}
+
+// ===== Co-Pilot =====
+export async function createCoPilotSession(title = null) {
+    return request('/copilot/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+    });
+}
+
+export async function listCoPilotSessions(limit = 20) {
+    return request(`/copilot/sessions?limit=${limit}`);
+}
+
+export async function getCoPilotMessages(sessionId) {
+    return request(`/copilot/sessions/${encodeURIComponent(sessionId)}/messages`);
+}
+
+export async function sendCoPilotMessage(sessionId, text) {
+    return request(`/copilot/sessions/${encodeURIComponent(sessionId)}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+    });
+}
+
+export async function deleteCoPilotSession(sessionId) {
+    return request(`/copilot/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+    });
+}
