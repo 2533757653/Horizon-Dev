@@ -43,8 +43,44 @@ No prose outside the JSON. No markdown fences.
 """
 
 
-def build_context_block(prices: list[dict], indicators: dict, portfolio: dict) -> str:
-    """Render the live-context block prepended to each user turn."""
+def _portfolio_total(portfolio) -> str:
+    """Return the portfolio's total USDT value as a string, regardless of shape."""
+    if portfolio is None:
+        return "?"
+    # Dict form (legacy / tests): {"total_usdt_value": ...}
+    if isinstance(portfolio, dict):
+        return str(portfolio.get("total_usdt_value", "?"))
+    # Dataclass form (PortfolioSnapshot): .total_usdt_value
+    if hasattr(portfolio, "total_usdt_value"):
+        return str(getattr(portfolio, "total_usdt_value"))
+    return "?"
+
+
+def _portfolio_balances(portfolio) -> list[dict]:
+    """Flatten any PortfolioSnapshot to a list of {asset, exchange, free} dicts."""
+    if portfolio is None:
+        return []
+    if isinstance(portfolio, dict):
+        return list(portfolio.get("balances", []) or [])
+    if hasattr(portfolio, "exchanges"):
+        flat: list[dict] = []
+        for exchange_name, balances in (portfolio.exchanges or {}).items():
+            for b in balances or []:
+                flat.append({
+                    "asset": getattr(b, "asset", "?"),
+                    "exchange": exchange_name,
+                    "free": str(getattr(b, "free", "0")),
+                })
+        return flat
+    return []
+
+
+def build_context_block(prices: list[dict], indicators: dict, portfolio) -> str:
+    """Render the live-context block prepended to each user turn.
+
+    ``portfolio`` may be either a dict (legacy / test shape) or a
+    ``PortfolioSnapshot`` dataclass — the helpers above normalize both.
+    """
     lines = ["### Live market context", ""]
     if prices:
         lines.append("Prices:")
@@ -61,11 +97,14 @@ def build_context_block(prices: list[dict], indicators: dict, portfolio: dict) -
             )
     if portfolio:
         lines.append("")
-        lines.append(f"Portfolio total: {portfolio.get('total_usdt_value','?')} USDT")
-        balances = portfolio.get("balances", [])
+        lines.append(f"Portfolio total: {_portfolio_total(portfolio)} USDT")
+        balances = _portfolio_balances(portfolio)
         if balances:
             lines.append("Holdings:")
             for b in balances[:10]:
-                if float(b.get("free", "0") or 0) > 0:
-                    lines.append(f"  - {b.get('asset','?')} on {b.get('exchange','?')}: free={b.get('free','?')}")
+                try:
+                    if float(b.get("free", "0") or 0) > 0:
+                        lines.append(f"  - {b.get('asset','?')} on {b.get('exchange','?')}: free={b.get('free','?')}")
+                except (TypeError, ValueError):
+                    continue
     return "\n".join(lines)

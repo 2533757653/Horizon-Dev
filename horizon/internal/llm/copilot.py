@@ -125,10 +125,11 @@ class CoPilotEngine:
         # 2. Gather context
         prices, indicators, portfolio = await self._gather_context()
         context_block = build_context_block(prices, indicators, portfolio)
+        from .copilot_prompt import _portfolio_balances
         context_summary = {
             "prices_fed": [p.get("symbol") for p in prices][:8],
             "indicators_fed": list(indicators.keys())[:6],
-            "positions_fed": bool(portfolio.get("balances")),
+            "positions_fed": bool(_portfolio_balances(portfolio)),
         }
 
         # 3. Load history (this session only)
@@ -171,7 +172,13 @@ class CoPilotEngine:
             raise
 
         latency_ms = int((time.monotonic() - t0) * 1000)
-        raw = result.content[0].text
+        # Anthropic may return interleaved ThinkingBlock + TextBlock. Concatenate all
+        # text blocks to recover the model reply even when thinking is enabled.
+        raw = "".join(
+            getattr(block, "text", "")
+            for block in result.content
+            if getattr(block, "type", "text") == "text"
+        )
         in_tok = getattr(result.usage, "input_tokens", 0) if hasattr(result, "usage") else 0
         out_tok = getattr(result.usage, "output_tokens", 0) if hasattr(result, "usage") else 0
 

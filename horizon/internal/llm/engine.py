@@ -148,7 +148,11 @@ class LLMStrategyEngine:
                     ),
                     timeout=DEFAULT_TIMEOUT_SECONDS,
                 )
-                raw_response = message_result.content[0].text
+                raw_response = "".join(
+                    getattr(block, "text", "")
+                    for block in message_result.content
+                    if getattr(block, "type", "text") == "text"
+                )
 
                 # Extract token usage
                 if hasattr(message_result, "usage") and message_result.usage:
