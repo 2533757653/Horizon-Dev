@@ -96,6 +96,7 @@ def _extend_trade_proposal():
             volume=row["volume"],
             confidence_score=row["confidence_score"],
             risk_tier=row["risk_tier"],
+            action_type=row["action_type"] if "action_type" in row.keys() else "open",
             llm_rationale=row["llm_rationale"],
             llm_raw_response=row["llm_raw_response"],
             technical_context=row["technical_context"],

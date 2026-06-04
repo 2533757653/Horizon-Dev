@@ -61,6 +61,7 @@ class TradeProposal:
     price_drift_threshold_pct: float
     proposed_price: float
     created_at: datetime
+    action_type: str = "open"  # one of: open, close, reduce
 
     @property
     def is_expired(self) -> bool:
@@ -90,6 +91,7 @@ class TradeProposal:
             "volume": self.volume,
             "confidence_score": self.confidence_score,
             "risk_tier": self.risk_tier,
+            "action_type": self.action_type,
             "llm_rationale": self.llm_rationale,
             "llm_raw_response": self.llm_raw_response,
             "technical_context": self.technical_context,
@@ -303,6 +305,10 @@ class LLMResponseParser:
             )
             risk_tier = DEFAULT_RISK_TIER
 
+        # Validate action_type
+        raw_action = proposal.get("action_type", "open")
+        action_type = raw_action if raw_action in ("open", "close", "reduce") else "open"
+
         # Validate price for limit orders
         price = proposal.get("price")
         if order_type == "limit":
@@ -354,6 +360,7 @@ class LLMResponseParser:
             volume=volume,
             confidence_score=confidence_score,
             risk_tier=risk_tier,
+            action_type=action_type,
             llm_rationale=proposal["rationale"],
             llm_raw_response=raw_response,
             technical_context=technical_context_json,
@@ -421,5 +428,14 @@ class LLMResponseParser:
         # Format 4: direct price value
         if "price" in market_snapshot:
             return float(market_snapshot["price"])
+
+        # Format 5: tickers as a list of dicts [{symbol, price/last_price, ...}, ...]
+        if "tickers" in market_snapshot and isinstance(market_snapshot["tickers"], list):
+            for t in market_snapshot["tickers"]:
+                if isinstance(t, dict) and t.get("symbol") == symbol:
+                    if "last_price" in t:
+                        return float(t["last_price"])
+                    if "price" in t:
+                        return float(t["price"])
 
         return None

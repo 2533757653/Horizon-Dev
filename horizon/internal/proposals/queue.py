@@ -98,11 +98,11 @@ class ProposalQueue:
             """
             INSERT INTO proposals (
                 id, status, exchange, symbol, side, order_type, price, volume,
-                confidence_score, risk_tier, llm_rationale, llm_raw_response,
+                confidence_score, risk_tier, action_type, llm_rationale, llm_raw_response,
                 technical_context, market_snapshot, portfolio_snapshot,
                 guardrail_result, approved_by, approved_at, executed_order_id,
                 expires_at, price_drift_threshold_pct, proposed_price, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 proposal.id,
@@ -115,6 +115,7 @@ class ProposalQueue:
                 proposal.volume,
                 proposal.confidence_score,
                 proposal.risk_tier,
+                proposal.action_type,
                 proposal.llm_rationale,
                 proposal.llm_raw_response,
                 proposal.technical_context,
