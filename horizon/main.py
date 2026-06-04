@@ -27,6 +27,14 @@ from horizon.internal.exchange.registry import ExchangeRegistry
 from horizon.internal.guardrails.cooldown_tracker import CooldownTracker
 from horizon.internal.guardrails.evaluator import RiskGuardrailEvaluator
 from horizon.internal.guardrails.rules import StrategyConfig
+from horizon.internal.indicators.calculator import TechnicalIndicatorCalculator
+from horizon.internal.llm.client import (
+    LLMCredentialsError,
+    build_anthropic_client,
+    load_llm_credentials,
+)
+from horizon.internal.llm.engine import LLMStrategyEngine
+from horizon.internal.llm.scheduler import LLMScheduler
 from horizon.internal.marketdata.fetcher import MarketDataFetcher
 from horizon.internal.ordermanager.manager import OrderManager
 from horizon.internal.pairlist import PairListRegistry, SymbolCache
@@ -270,6 +278,34 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     proposal_queue.set_registry(registry)
     logger.info("ProposalQueue initialized with guardrail_evaluator and paper_simulator")
 
+    # 10a. LLM stack: client + engine + scheduler (best-effort — server still runs if LLM unavailable)
+    anthropic_client = None
+    llm_engine = None
+    llm_scheduler = None
+    indicator_calculator = TechnicalIndicatorCalculator(db)
+    try:
+        anthropic_client = build_anthropic_client()
+        logger.info("Anthropic client built successfully")
+    except LLMCredentialsError as e:
+        logger.warning("LLM disabled — credentials unavailable: %s", e)
+
+    if anthropic_client is not None:
+        # Build a dict version of the strategy config row for the engine
+        cursor = await db.execute("SELECT * FROM strategy_configs WHERE enabled = 1 LIMIT 1")
+        sc_row = await cursor.fetchone()
+        strategy_config_dict = dict(sc_row) if sc_row else {}
+        llm_engine = LLMStrategyEngine(
+            db=db,
+            registry=registry,
+            proposal_queue=proposal_queue,
+            anthropic_client=anthropic_client,
+            strategy_config=strategy_config_dict,
+            indicator_calculator=indicator_calculator,
+            fetcher=fetcher,
+        )
+        llm_scheduler = LLMScheduler(llm_engine, interval_seconds=8 * 3600, run_on_start=False)
+        logger.info("LLMStrategyEngine + LLMScheduler initialized")
+
     # Store components in app state
     application.state.db = db
     application.state.registry = registry
@@ -284,6 +320,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     application.state.guardrail_evaluator = guardrail_evaluator
     application.state.paper_simulator = paper_simulator
     application.state.proposal_queue = proposal_queue
+    application.state.llm_engine = llm_engine
+    application.state.llm_scheduler = llm_scheduler
+    application.state.indicator_calculator = indicator_calculator
 
     # 11. Start background tasks
 
@@ -298,6 +337,15 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     # Start auto-execution scanner
     await proposal_queue.start_auto_execution_scanner()
+
+    # Start proposal expiry scanner
+    await proposal_queue.start_expiry_scanner()
+    logger.info("Proposal expiry scanner started")
+
+    # Start LLM scheduler (8h periodic analysis) if available
+    if llm_scheduler is not None:
+        await llm_scheduler.start()
+        logger.info("LLM scheduler started (interval 8h)")
 
     # Start paper_simulator.update_market_prices() loop (every 30 seconds)
     async def paper_price_update_loop() -> None:
@@ -349,6 +397,15 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     # Stop auto-execution scanner
     await proposal_queue.stop_auto_execution_scanner()
     logger.info("Proposal queue auto-execution scanner stopped")
+
+    # Stop LLM scheduler if running
+    if llm_scheduler is not None:
+        await llm_scheduler.stop()
+        logger.info("LLM scheduler stopped")
+
+    # Stop proposal expiry scanner
+    await proposal_queue.stop_expiry_scanner()
+    logger.info("Proposal expiry scanner stopped")
 
     # Stop fetcher
     await fetcher.stop()
