@@ -650,3 +650,43 @@ select:focus { outline: 1px solid var(--accent-primary); }
 .allocation-bar-fill.sol { background: #14f195; }
 .allocation-bar-fill.usdt { background: #26a17b; }
 .allocation-bar-fill.other { background: var(--accent-primary); }
+
+/* Proposals Queue */
+.proposals-panel { grid-column: span 2; }
+.proposals-cols {
+    display: grid;
+    grid-template-columns: 80px 100px 130px 70px 80px 80px 70px 110px 150px 1fr;
+    gap: 8px;
+    font-size: 13px;
+    align-items: center;
+}
+.status-proposed { color: var(--accent-primary); }
+.status-approved, .status-executed, .status-auto_executed { color: var(--positive); }
+.status-rejected { color: var(--text-secondary); }
+.status-expired { color: var(--warning); }
+.btn-approve {
+    background: var(--positive); color: #000; border: none;
+    padding: 4px 10px; border-radius: 4px; cursor: pointer; font-weight: 600;
+    margin-right: 4px;
+}
+.btn-reject {
+    background: transparent; color: var(--negative); border: 1px solid var(--negative);
+    padding: 4px 10px; border-radius: 4px; cursor: pointer;
+}
+.btn-primary {
+    background: var(--accent-primary); color: #fff; border: none;
+    padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 600;
+}
+.btn-primary:hover { opacity: 0.9; }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.panel-controls { display: flex; gap: 8px; align-items: center; }
+.modal-wide { max-width: 720px; }
+.proposal-detail .row { margin: 6px 0; font-size: 13px; }
+.proposal-detail pre {
+    background: var(--bg-elevated); padding: 10px; border-radius: 6px;
+    font-size: 12px; max-height: 180px; overflow: auto; white-space: pre-wrap;
+}
+.empty-state, .error-state {
+    padding: 20px; text-align: center; color: var(--text-secondary);
+}
+.error-state { color: var(--negative); }
