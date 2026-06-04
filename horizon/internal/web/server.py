@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -132,6 +133,8 @@ class StrategyConfigModel(BaseModel):
     cooldown_seconds: Optional[int] = Field(None, ge=0)
     order_min_notional: Optional[float] = Field(None, gt=0)
     order_max_notional: Optional[float] = Field(None, gt=0)
+    price_drift_expiry_pct: Optional[float] = Field(None, gt=0, le=100)
+    system_prompt: Optional[str] = Field(None, min_length=1, description="LLM system prompt")
 
 
 class ApproveProposalModel(BaseModel):
@@ -170,6 +173,10 @@ def create_app(
     cooldown_tracker: CooldownTracker | None = None,
     paper_simulator: PaperTradingSimulator | None = None,
     strategy_config: StrategyConfig | None = None,
+    proposal_queue: Any = None,
+    llm_engine: Any = None,
+    copilot: Any = None,
+    llm_scheduler: Any = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -184,6 +191,10 @@ def create_app(
         cooldown_tracker: Optional cooldown tracker.
         paper_simulator: Optional paper trading simulator.
         strategy_config: Optional strategy config.
+        proposal_queue: Optional LLM proposal queue (autonomous track).
+        llm_engine: Optional LLM strategy engine.
+        copilot: Optional CoPilot engine (multi-turn dialogue).
+        llm_scheduler: Optional LLM periodic scheduler.
 
     Returns:
         Configured FastAPI application instance.
@@ -214,6 +225,10 @@ def create_app(
     app.state.cooldown_tracker = cooldown_tracker
     app.state.paper_simulator = paper_simulator
     app.state.strategy_config = strategy_config
+    app.state.proposal_queue = proposal_queue
+    app.state.llm_engine = llm_engine
+    app.state.copilot = copilot
+    app.state.llm_scheduler = llm_scheduler
 
     # Initialize kline cache and datasource
     kline_cache = KlineCache(
@@ -1155,26 +1170,40 @@ def create_app(
         body: StrategyModeModel,
     ) -> JSONResponse:
         """Switch system mode between live and paper."""
-        evaluator: RiskGuardrailEvaluator | None = request.app.state.guardrail_evaluator
-
-        if evaluator is None:
-            raise HTTPException(status_code=503, detail="Guardrail evaluator not available")
-
         try:
             from ..guardrails.evaluator import SystemMode
-            mode = SystemMode(body.mode)
-            await evaluator.set_mode(mode)
-
-            strategy_config = request.app.state.strategy_config
-            if strategy_config is not None:
-                strategy_config.mode = body.mode
-
-            return CustomJSONResponse(content={
-                "mode": body.mode,
-                "message": f"System mode switched to {body.mode}",
-            })
+            SystemMode(body.mode)  # validate
         except ValueError:
             raise HTTPException(status_code=422, detail=f"Invalid mode: {body.mode}")
+
+        db: aiosqlite.Connection = request.app.state.db
+        cursor = await db.execute(
+            "UPDATE strategy_configs SET mode = ?, updated_at = ? WHERE enabled = 1",
+            (body.mode, datetime.now(timezone.utc)),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="no active strategy config")
+        await db.commit()
+
+        # Mirror onto the in-memory strategy_config object if present.
+        strategy_config = getattr(request.app.state, "strategy_config", None)
+        if strategy_config is not None:
+            strategy_config.mode = body.mode
+
+        # If a guardrail evaluator is wired in, propagate the change to it too
+        # so its in-memory mode stays in sync.
+        evaluator: RiskGuardrailEvaluator | None = request.app.state.guardrail_evaluator
+        if evaluator is not None:
+            try:
+                from ..guardrails.evaluator import SystemMode
+                await evaluator.set_mode(SystemMode(body.mode))
+            except Exception as e:
+                logger.warning("guardrail evaluator could not apply mode change: %s", e)
+
+        return CustomJSONResponse(content={
+            "mode": body.mode,
+            "message": f"System mode switched to {body.mode}",
+        })
 
     @app.get("/api/strategy/mode")
     async def get_strategy_mode(request: Request) -> JSONResponse:
@@ -1234,22 +1263,38 @@ def create_app(
         if body.order_max_notional is not None:
             updates.append("order_max_notional = ?")
             params.append(body.order_max_notional)
+        if body.system_prompt is not None:
+            updates.append("system_prompt = ?")
+            params.append(body.system_prompt)
+        if body.price_drift_expiry_pct is not None:
+            updates.append("price_drift_expiry_pct = ?")
+            params.append(body.price_drift_expiry_pct)
 
         if not updates:
             raise HTTPException(status_code=400, detail="No fields to update")
 
         updates.append("updated_at = ?")
         params.append(datetime.now(timezone.utc))
-        params.append("default_long_term")
 
-        query = f"UPDATE strategy_configs SET {', '.join(updates)} WHERE name = ?"
-        await db.execute(query, params)
+        query = f"UPDATE strategy_configs SET {', '.join(updates)} WHERE enabled = 1"
+        cursor = await db.execute(query, params)
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="no active strategy config")
         await db.commit()
 
-        return CustomJSONResponse(content={
-            "message": "Strategy config updated",
-            "updated_fields": len(updates) - 1,
-        })
+        # Return the freshly-updated row so clients can see the new state
+        cursor = await db.execute(
+            "SELECT * FROM strategy_configs WHERE enabled = 1 LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        data = dict(row) if row else {}
+        if isinstance(data.get("asset_whitelist"), str):
+            try:
+                data["asset_whitelist"] = json.loads(data["asset_whitelist"])
+            except (TypeError, ValueError):
+                pass
+        data.pop("autonomy_enabled", None)
+        return CustomJSONResponse(data)
 
     # =========================================================================
     # Proposals endpoints (5)
@@ -1372,7 +1417,16 @@ def create_app(
         row = await cursor.fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="no active strategy config")
-        return CustomJSONResponse(dict(row))
+        data = dict(row)
+        # asset_whitelist is stored as a JSON string — decode for the client
+        if isinstance(data.get("asset_whitelist"), str):
+            try:
+                data["asset_whitelist"] = json.loads(data["asset_whitelist"])
+            except (TypeError, ValueError):
+                pass
+        # Don't expose internal autonomy flag to the front-end
+        data.pop("autonomy_enabled", None)
+        return CustomJSONResponse(data)
 
     # =========================================================================
     # Co-Pilot endpoints (5)

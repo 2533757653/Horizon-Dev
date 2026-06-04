@@ -49,6 +49,7 @@ class TestWebServerProposals:
                 volume REAL NOT NULL,
                 confidence_score INTEGER NOT NULL,
                 risk_tier TEXT NOT NULL,
+                action_type TEXT NOT NULL DEFAULT 'open',
                 llm_rationale TEXT NOT NULL,
                 llm_raw_response TEXT,
                 technical_context TEXT,
