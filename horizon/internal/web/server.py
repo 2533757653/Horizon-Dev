@@ -1374,6 +1374,76 @@ def create_app(
             raise HTTPException(status_code=404, detail="no active strategy config")
         return CustomJSONResponse(dict(row))
 
+    # =========================================================================
+    # Co-Pilot endpoints (5)
+    # =========================================================================
+
+    @app.post("/api/copilot/sessions")
+    async def copilot_create_session(body: CreateCoPilotSessionModel) -> JSONResponse:
+        """Create a new Co-Pilot conversation session."""
+        cp = getattr(app.state, "copilot", None)
+        if cp is None:
+            raise HTTPException(status_code=503, detail="Co-Pilot unavailable")
+        s = await cp.create_session(title=body.title)
+        return CustomJSONResponse({"id": s.id, "title": s.title, "created_at": str(s.created_at)})
+
+    @app.get("/api/copilot/sessions")
+    async def copilot_list_sessions(limit: int = Query(20, ge=1, le=100)) -> JSONResponse:
+        """List recent Co-Pilot sessions (most recently updated first)."""
+        cp = getattr(app.state, "copilot", None)
+        if cp is None:
+            raise HTTPException(status_code=503, detail="Co-Pilot unavailable")
+        sessions = await cp.list_sessions(limit=limit)
+        return CustomJSONResponse({"sessions": [
+            {"id": s.id, "title": s.title, "created_at": str(s.created_at),
+             "updated_at": str(s.updated_at), "message_count": s.message_count}
+            for s in sessions
+        ]})
+
+    @app.delete("/api/copilot/sessions/{session_id}")
+    async def copilot_delete_session(session_id: str) -> JSONResponse:
+        """Delete a Co-Pilot session and all its messages."""
+        cp = getattr(app.state, "copilot", None)
+        if cp is None:
+            raise HTTPException(status_code=503, detail="Co-Pilot unavailable")
+        await cp.delete_session(session_id)
+        return CustomJSONResponse({"deleted": session_id})
+
+    @app.get("/api/copilot/sessions/{session_id}/messages")
+    async def copilot_get_messages(session_id: str) -> JSONResponse:
+        """List all messages in a Co-Pilot session, oldest first."""
+        cp = getattr(app.state, "copilot", None)
+        if cp is None:
+            raise HTTPException(status_code=503, detail="Co-Pilot unavailable")
+        msgs = await cp.get_messages(session_id)
+        return CustomJSONResponse({"messages": [
+            {"id": m.id, "role": m.role, "content": m.content,
+             "trade_suggestion": m.trade_suggestion,
+             "context_summary": m.context_summary,
+             "token_count_input": m.token_count_input,
+             "token_count_output": m.token_count_output,
+             "latency_ms": m.latency_ms,
+             "created_at": str(m.created_at)}
+            for m in msgs
+        ]})
+
+    @app.post("/api/copilot/sessions/{session_id}/messages")
+    async def copilot_send_message(session_id: str, body: SendCoPilotMessageModel) -> JSONResponse:
+        """Send a user message in a Co-Pilot session and return the assistant reply."""
+        cp = getattr(app.state, "copilot", None)
+        if cp is None:
+            raise HTTPException(status_code=503, detail="Co-Pilot unavailable")
+        reply = await cp.send_message(session_id, body.text)
+        return CustomJSONResponse({
+            "message_id": reply.message_id,
+            "assistant_text": reply.assistant_text,
+            "trade_suggestion": reply.trade_suggestion,
+            "context_summary": reply.context_summary,
+            "token_count_input": reply.token_count_input,
+            "token_count_output": reply.token_count_output,
+            "latency_ms": reply.latency_ms,
+        })
+
     # Serve static HTML page
     @app.get("/")
     async def index():
