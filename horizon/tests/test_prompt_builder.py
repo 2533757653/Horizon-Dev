@@ -447,6 +447,36 @@ class TestMarketContextFormatting:
         assert builder._format_value("invalid") == "N/A"
         assert builder._format_value("not a number") == "N/A"
 
+    def test_prompt_includes_close_and_reduce_instructions(self):
+        """Test that the prompt teaches the LLM about close/reduce action types."""
+        from horizon.internal.llm.prompt_builder import PromptBuilder, MarketContext, PortfolioContext
+        strategy_config = {
+            "id": 1, "name": "default_long_term", "enabled": 1, "mode": "live",
+            "autonomy_enabled": 0, "min_confidence_threshold": 75, "max_risk_tier": "low",
+            "analysis_interval_hours": 8, "asset_whitelist": '["BTCUSDT"]',
+            "max_position_pct": 20, "max_daily_loss_pct": 5,
+            "max_exchange_exposure_pct": 50, "cooldown_seconds": 300,
+            "system_prompt": "",
+        }
+        pb = PromptBuilder(strategy_config)
+        mc = MarketContext(tickers=[], orderbooks={}, technical_indicators={}, recent_trades={})
+        pc = PortfolioContext(
+            balances=[],
+            total_usdt_value="0",
+            open_positions={
+                "BTC": {"side": "long", "volume": "0.5", "entry_price": "60000"}
+            },
+        )
+        prompt = pb.build(mc, pc, strategy_config)
+        # Schema has action_type
+        assert "action_type" in prompt
+        # Instructions mention open / close / reduce
+        assert "open" in prompt.lower()
+        assert "close" in prompt.lower()
+        assert "reduce" in prompt.lower()
+        # Current open positions are listed
+        assert "BTC" in prompt
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

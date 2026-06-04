@@ -454,10 +454,13 @@ class LLMStrategyEngine:
                 free = float(balance.get("free", "0"))
                 locked = float(balance.get("locked", "0"))
                 if free > 0 or locked > 0:
+                    entry_price = await self._estimate_entry_price(
+                        balance["asset"], balance.get("exchange", "")
+                    )
                     open_positions[balance["asset"]] = {
                         "side": "long",
                         "volume": str(free + locked),
-                        "entry_price": "N/A",
+                        "entry_price": entry_price,
                     }
 
         return PortfolioContext(
@@ -465,6 +468,27 @@ class LLMStrategyEngine:
             total_usdt_value=f"{total_usdt_value:.2f}",
             open_positions=open_positions,
         )
+
+    async def _estimate_entry_price(self, asset: str, exchange: str) -> str:
+        """Estimate average entry price from the most recent filled orders.
+
+        Looks back at the 5 most recent filled orders for any symbol starting
+        with the given asset. Returns the average fill price as a 2-decimal
+        string, or "N/A" if no filled orders are found.
+        """
+        try:
+            cursor = await self._db.execute(
+                "SELECT AVG(price) FROM orders "
+                "WHERE symbol LIKE ? AND exchange = ? AND status = 'filled' "
+                "ORDER BY created_at DESC LIMIT 5",
+                (f"{asset}%", exchange),
+            )
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return f"{row[0]:.2f}"
+        except Exception as e:
+            logger.warning("Failed to estimate entry price for %s: %s", asset, e)
+        return "N/A"
 
     def _build_market_snapshot(self, market_context: MarketContext) -> dict:
         """Build market snapshot dict from market context."""

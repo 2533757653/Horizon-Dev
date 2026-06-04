@@ -226,9 +226,15 @@ class PromptBuilder:
 
 - Analyze the provided data and decide if any trades are recommended.
 - You may recommend zero trades if market conditions do not favor entry.
-- For each recommended trade, provide: exchange, symbol, side, order_type, price (for limit), volume, confidence_score (0-100), risk_tier (low/medium/high), and a detailed rationale.
+- For each recommended trade, provide: exchange, symbol, side, order_type, price (for limit), volume, confidence_score (0-100), risk_tier (low/medium/high), action_type (open|close|reduce), and a detailed rationale.
 - Consider portfolio concentration — do not recommend assets already at max position size.
-- Consider technical indicator confluence — trades with multiple confirming indicators should have higher confidence."""
+- Consider technical indicator confluence — trades with multiple confirming indicators should have higher confidence.
+- You may also recommend modifying existing positions:
+  - action_type = "close": fully exit a position you currently hold
+  - action_type = "reduce": partially exit a position (volume = amount to exit)
+  - action_type = "open": new entry (default if omitted)
+  For close/reduce, the `side` field is the closing side (opposite of held direction).
+  Only propose close/reduce for symbols listed under "Current open positions"."""
 
     def _build_response_format(self) -> str:
         """Build response format section with exact JSON schema."""
@@ -248,6 +254,7 @@ Schema:
       "order_type": "market|limit",
       "price": "12345.67",
       "volume": "0.5",
+      "action_type": "open|close|reduce",
       "confidence_score": 85,
       "risk_tier": "low|medium|high",
       "rationale": "Detailed explanation of the trade thesis"
