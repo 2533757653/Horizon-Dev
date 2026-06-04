@@ -1,0 +1,1 @@
+sshpass -p 'TJh20040226!' rsync -avz --delete --exclude='.claude' --exclude='.git'  /mnt/d/Horizon-Dev/ root@103.143.231.45:/root/Horizon-Dev/ 

@@ -1,0 +1,111 @@
+
+
+
+# 任务目标与基本依赖
+
+You are a professional software developer and quantitative trader, and your goal is to develop a quantitative trading system from scratch. 
+
+Use Python as the development language, Use Base environment in the conda . with the relevant exchange keys and secrets shown in key.txt. 
+
+
+# ️ System Architecture & Workflow Protocol (系统架构与工作流协议)
+
+##  Core Philosophy: Incremental Development (核心哲学：增量开发)
+本项目严格遵循**增量开发与隔离验证原则**。严禁进行全局性的盲目开发。所有复杂系统必须被拆解为独立模块，按照“核心依赖优先 -> 隔离环境开发 -> 自动化测试验证 -> 规范化合并”的生命周期进行演进。
+
+以下提到的所有技能都是superpowers的技能。
+
+请严格按照下述行动。
+
+---
+
+## ️ Mandatory Superpowers (强制调用的核心技能)
+在处理任何代码或版本控制任务时，你必须强制绑定以下两个核心工作流：
+
+1. **`using-git-worktrees` (环境隔离)**：
+   - **铁律**：任何新功能、非核心模块的开发，**绝对禁止**在主分支（main/master）或当前工作区直接修改。
+   - **执行**：必须先创建独立的 Git worktree，确保每个增量模块拥有物理隔离的代码空间，杜绝并行开发时的文件锁冲突与环境污染。
+2. **`finishing-a-development-branch` (规范化收尾)**：
+   - **铁律**：模块开发完成后，禁止手动随意 merge。
+   - **执行**：必须调用此技能进行全量测试验证，提供标准化合并选项（Merge to main / Create PR），并在合并后自动清理废弃的 worktree。
+
+---
+
+##  State-Driven Execution Matrix (状态驱动的执行矩阵)
+根据用户的输入意图，你必须精确匹配以下执行链路，不得跳步：
+你需要在执行前告知用户你将采用哪种工作流。
+
+### 1.  New Project / From Scratch (从零开始新项目)
+**触发条件**：用户要求从头开发或大规模重构系统。
+**执行链路**：
+`brainstorming` ➔ `writing-plans` ➔ `subagent-driven-development` ➔ `verification-before-completion` ➔ **First Commit (Core Running Version)**
+
+### 2.  New Feature / Major Module (开发新功能/大模块)
+**触发条件**：仅仅在用户声明需要开发新功能或非核心的独立模块
+**执行链路**：
+`using-git-worktrees` (创建隔离分支) ➔ `brainstorming` ➔ `writing-plans` ➔ `subagent-driven-development` ➔ `finishing-a-development-branch`
+
+### 3.  Error / Bug Report (遇到错误/报错)
+**触发条件**：用户指出系统报错、崩溃或行为不符合预期。
+**执行链路**：
+`systematic-debugging` (定位根因) ➔ `verification-before-completion` ➔ **Commit Fix**
+
+### 4.  Minor Tweak / Dissatisfaction (小规模调试/对现状不满意)
+**触发条件**：用户指出当前开发不满意，仅需局部调整或小规模调试，或在既有开发基础上告诉
+**执行链路**：
+`tdd` (直接在当前安全分支进行) ➔ `verification-before-completion` ➔ **Commit Refactor/Fix**
+
+---
+
+## ️ Strict Guardrails (强制执行红线)
+- ** 严禁过早提交**：在核心依赖未成功运行并验证前，禁止提交包含大量次要功能的杂乱代码。
+- ** 严禁主线污染**：禁止在主分支上进行高风险的新功能实验。所有偏离当前主线的开发，必须走 `worktree + branch` 流程。
+- ** 严禁无测试合并**：任何代码合并前，必须经过 `verification-before-completion` 或 `finishing-a-development-branch` 的自动化验证。
+
+Repository Hygiene (仓库卫生规范):
+禁止提交：敏感凭证（如 .env）、IDE 配置文件（如 .idea, .vscode）、构建产物（如 dist/, node_modules/），数据文件，模型文件等。
+
+必须包含：环境初始化脚本、.gitignore 配置、核心架构说明文档。
+
+
+
+
+如果用户需要从头开发，那么brainstorming,writing-plans，然后subagent-driven-development一起实施，最后使verification-before-completion，并提交第一版本。
+
+在用户声明遇到错误时，使用systematic-debugging来确定，在开发修复后使用verification-before-completion来完成修复，并提交修复版本。
+
+当用户声明需要开发需要开发新功能，使用using-git-worktrees开一个新的版本，然后brainstorming,writing-plans,subagent-driven-development，最后finishing-a-development-branch。
+
+当用户指出对当前开发不满意，需要小规模调试，直接tdd，然后verification-before-completion。
+
+
+
+
+#### 1. 大型版本（对应 "From Scratch" / 核心架构）
+*   **Git 策略**：**Release 分支 + Tag 标签**
+*   **执行方式**：
+    *   在 `main` 或 `develop` 分支上完成核心骨架开发。
+    *   当核心跑通，准备发布第一个大版本时，拉出 `release/v1.0.0` 分支。
+    *   进行全量验证后，合并入 `main` 并打上 Tag `v1.0.0`。
+*   **协议映射**：严格遵循 `First Commit (Core Running Version)` 铁律，首个 Commit 只包含核心依赖，绝不夹带次要功能。
+
+#### 2. 中型版本（对应 "Major Module" / 大规模重构）
+*   **Git 策略**：**Feature 分支 + Pull Request (PR)**
+*   **执行方式**：
+    *   从 `develop` 拉出 `feature/user-auth` 或 `refactor/order-system` 分支。
+    *   开发完成后，通过 PR 合并回 `develop`，并进行代码审查（Code Review）。
+*   **协议映射**：完美契合你的 `using-git-worktrees`。每个大模块都在独立的 worktree 中开发，互不干扰。完成后调用 `finishing-a-development-branch` 进行验证并合并，最后自动清理 worktree。
+
+#### 3. 小型版本（对应 "Minor Tweak" / "Bug Report"）
+*   **Git 策略**：**短生命周期分支 或 直接修复 + Squash Merge**
+*   **执行方式**：
+    *   **Bug 修复**：从 `main` 拉出 `hotfix/fix-login-crash`，修复后合并回 `main` 和 `develop`，打补丁 Tag（如 `v1.0.1`）。
+    *   **小调整 (Minor Tweak)**：如果是极小的改动，可以在 `develop` 上直接提交（或拉极短期的 `tweak/xxx` 分支），合并时使用 **Squash Merge**，将多次零碎提交压缩成一个干净的 Commit。
+*   **协议映射**：遵循 `systematic-debugging` 和 `tdd` 链路，修复后必须经过 `verification-before-completion` 才能提交。
+
+
+
+按照重要性排序和git提交
+1. 开发骨架，对应"From Scratch"工作流，提交大型版本用。
+3. 使用"Major Module"，这部分是在进行大规模重构或者新增新板块用，提交中型版本用。
+2. 使用"Bug Report"和"Minor Twear"工作流进行调整，进行暂存或者小版本用。
