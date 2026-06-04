@@ -349,6 +349,7 @@ class LLMStrategyEngine:
             orderbook_data = None
 
             # Get recent trades from first enabled adapter
+            enabled = self._registry.list_enabled()
             trades_data: list[dict] = []
             if enabled:
                 try:
