@@ -4,10 +4,13 @@ Async database module for Horizon Trading Platform.
 Provides async context manager for database connections and migration handling.
 """
 
+import logging
 import os
 import aiosqlite
 from contextlib import asynccontextmanager
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -81,7 +84,17 @@ async def run_migrations(conn: aiosqlite.Connection, migrations_dir: str):
         # Split on ';' and execute each statement
         statements = [s.strip() for s in sql_content.split(';') if s.strip()]
         for statement in statements:
-            await conn.execute(statement)
+            try:
+                await conn.execute(statement)
+            except aiosqlite.OperationalError as e:
+                msg = str(e).lower()
+                if "duplicate column" in msg or "already exists" in msg:
+                    logger.warning(
+                        "Skipping already-applied schema change in %s: %s",
+                        sql_file, e,
+                    )
+                    continue
+                raise
 
         await conn.commit()
 
