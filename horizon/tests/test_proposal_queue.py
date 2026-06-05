@@ -1111,6 +1111,53 @@ class TestAutoExecution:
         assert statuses[p1.id] == ProposalStatus.EXPIRED.value
         assert statuses[p2.id] == ProposalStatus.AUTO_EXECUTED.value
 
+    @pytest.mark.asyncio
+    async def test_scan_proposals_works_with_dataclass_strategy_config(
+        self, db, order_manager, exchange_registry, sample_proposal
+    ):
+        """Regression: production main.py passes a StrategyConfig dataclass
+        (not a dict). The expiry scanner must access its fields via getattr
+        or attribute lookup, not dict-style .get().
+
+        Bug was: queue.py:_scan_proposals lines 379-381 used
+            self._strategy_config.get("autonomy_enabled", False)
+        which raises AttributeError on the dataclass.
+        """
+        from horizon.internal.guardrails.rules import StrategyConfig
+
+        dataclass_cfg = StrategyConfig(
+            asset_whitelist=["BTCUSDT"],
+            order_min_notional=Decimal("10"),
+            order_max_notional=Decimal("1000000"),
+            max_exchange_exposure_pct=0.5,
+            max_position_pct=0.3,
+            cooldown_seconds=300,
+            max_daily_loss_pct=0.05,
+        )
+
+        # Guardrail evaluator is optional; pass None to exercise the
+        # "no auto-execution" branch (still requires .get()/getattr to work).
+        queue = ProposalQueue(
+            db=db,
+            order_manager=order_manager,
+            strategy_config=dataclass_cfg,
+            guardrail_evaluator=None,
+            paper_simulator=None,
+        )
+        queue.set_registry(exchange_registry)
+
+        # Add one non-expired proposal so the scanner has work to do.
+        await queue.enqueue(sample_proposal)
+
+        # Must not raise AttributeError: 'StrategyConfig' object has no attribute 'get'
+        await queue._scan_proposals()
+
+        # And the dataclass fields used for auto-execution pre-filter should
+        # have been honored (autonomy_enabled=False → no AUTO_EXECUTED).
+        cursor = await db.execute("SELECT status FROM proposals WHERE id = ?", (sample_proposal.id,))
+        row = await cursor.fetchone()
+        assert row["status"] == ProposalStatus.PROPOSED.value
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

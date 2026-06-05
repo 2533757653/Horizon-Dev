@@ -362,10 +362,14 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     await proposal_queue.start_expiry_scanner()
     logger.info("Proposal expiry scanner started")
 
-    # Start LLM scheduler (8h periodic analysis) if available
+    # LLM scheduler is intentionally NOT auto-started.
+    # The user wants manual control over when autonomous analysis runs —
+    # via the [Run Analysis Now] button on the dashboard, or
+    # POST /api/llm/trigger. The scheduler instance remains available so
+    # those manual triggers can call .trigger_now() against it.
+    # To re-enable auto-run, uncomment the next two lines.
     if llm_scheduler is not None:
-        await llm_scheduler.start()
-        logger.info("LLM scheduler started (interval 8h)")
+        logger.info("LLM scheduler available for manual trigger (auto-start disabled)")
 
     # Start paper_simulator.update_market_prices() loop (every 30 seconds)
     async def paper_price_update_loop() -> None:

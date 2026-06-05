@@ -15,7 +15,12 @@ async def test_create_and_send_message(tmp_path):
 
     # Mock Anthropic client
     fake_msg = MagicMock()
-    fake_msg.content = [MagicMock(text=json.dumps({
+    # The production code filters blocks by `block.type == "text"`. The
+    # integration agent added that filter when patching ThinkingBlock
+    # interleaving — MagicMock's auto-attrs don't satisfy the filter
+    # unless we set `.type` explicitly.
+    text_block = MagicMock()
+    text_block.text = json.dumps({
         "assistant_text": "Based on RSI 38, modest oversold. Consider a small entry.",
         "trade_suggestion": {
             "exchange": "binance", "symbol": "BTCUSDT",
@@ -23,7 +28,9 @@ async def test_create_and_send_message(tmp_path):
             "price": "60000", "volume": "0.01",
             "rationale": "oversold bounce",
         }
-    }))]
+    })
+    text_block.type = "text"
+    fake_msg.content = [text_block]
     fake_msg.usage = MagicMock(input_tokens=200, output_tokens=80)
     anth = MagicMock()
     anth.messages.create = AsyncMock(return_value=fake_msg)

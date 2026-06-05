@@ -375,10 +375,16 @@ class ProposalQueue:
         expired_count = 0
         auto_executed_count = 0
 
-        # Get autonomy settings from strategy config
-        autonomy_enabled = self._strategy_config.get("autonomy_enabled", False)
-        min_confidence = self._strategy_config.get("min_confidence_threshold", 75)
-        max_risk_tier = self._strategy_config.get("max_risk_tier", "low")
+        # Get autonomy settings from strategy config.
+        # Production passes a StrategyConfig dataclass, but older tests
+        # (and earlier wiring) use a dict. Support both transparently.
+        # NB: `autonomy_enabled`, `min_confidence_threshold`, `max_risk_tier`
+        # are DB columns on `strategy_configs` but NOT dataclass fields, so
+        # getattr returns the default. The /api/strategy/config endpoint
+        # is the single source of truth for these knobs going forward.
+        autonomy_enabled = self._strategy_config_value("autonomy_enabled", False)
+        min_confidence = self._strategy_config_value("min_confidence_threshold", 75)
+        max_risk_tier = self._strategy_config_value("max_risk_tier", "low")
         risk_tier_order = {"low": 1, "medium": 2, "high": 3}
         max_tier_value = risk_tier_order.get(max_risk_tier, 1)
 
@@ -563,9 +569,9 @@ class ProposalQueue:
         if self._guardrail_evaluator is None:
             return
 
-        # Get autonomy thresholds from strategy config
-        min_confidence = getattr(self._strategy_config, "min_confidence_threshold", 75)
-        max_risk_tier = getattr(self._strategy_config, "max_risk_tier", "low")
+        # Get autonomy thresholds from strategy config (dict- and dataclass-safe)
+        min_confidence = self._strategy_config_value("min_confidence_threshold", 75)
+        max_risk_tier = self._strategy_config_value("max_risk_tier", "low")
         risk_tier_order = {"low": 1, "medium": 2, "high": 3}
         max_tier_value = risk_tier_order.get(max_risk_tier, 1)
 
@@ -703,3 +709,19 @@ class ProposalQueue:
         except Exception as e:
             logger.warning(f"Failed to fetch price for {symbol} on {exchange}: {e}")
             return None
+
+    def _strategy_config_value(self, name: str, default):
+        """Read a value from the strategy config, transparently handling
+        both dict-style (legacy test fixtures) and dataclass-style
+        (production) configs.
+
+        Production main.py passes a `StrategyConfig` dataclass that does
+        NOT carry autonomy / confidence fields — those live in the
+        `strategy_configs` table and should be edited via
+        PUT /api/strategy/config. The dataclass fields that exist are
+        `mode`, `asset_whitelist`, and the notional/pct guardrail knobs.
+        """
+        cfg = self._strategy_config
+        if isinstance(cfg, dict):
+            return cfg.get(name, default)
+        return getattr(cfg, name, default)

@@ -162,7 +162,18 @@ class CooldownRule(GuardrailRule):
             # If no cooldown tracker, allow by default (fail open)
             return True, {"current_value": None, "threshold_value": None}
 
-        passed = not await cooldown_tracker.is_in_cooldown(request.exchange, request.symbol)
+        # BUGFIX: previous code was `not await tracker.is_in_cooldown(...)` which
+        # is `not (bool, int)` — a non-empty tuple is truthy, so this was ALWAYS
+        # False, meaning the cooldown rule fired for every order. Accept both
+        # the real (bool, int) tuple and a bare bool for back-compat with tests.
+        result = await cooldown_tracker.is_in_cooldown(
+            request.exchange, request.symbol
+        )
+        if isinstance(result, tuple):
+            in_cooldown, _remaining = result
+        else:
+            in_cooldown = bool(result)
+        passed = not in_cooldown
         strategy_config = context.get("strategy_config")
         threshold_seconds = strategy_config.cooldown_seconds if strategy_config else 300
 
