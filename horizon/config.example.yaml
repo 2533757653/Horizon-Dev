@@ -1,0 +1,67 @@
+# Horizon Trading Platform — Configuration Template
+#
+# Copy this file to `config.yaml` and fill in your own values:
+#   cp config.example.yaml config.yaml
+# `config.yaml` is gitignored and will never be committed.
+#
+# All sensitive values can also be supplied via environment variables
+# (HORIZON_BINANCE_API_KEY, etc.) — see horizon/.env.example for the
+# complete list. Environment variables take precedence over config.yaml.
+
+app:
+  host: "0.0.0.0"
+  port: 8080
+  log_level: "info"
+
+exchanges:
+  binance:
+    enabled: true
+    recv_window_ms: 5000
+    api_key: ""          # Get from https://www.binance.com/en/my/settings/api-management
+    api_secret: ""
+  htx:
+    enabled: true
+    recv_window_ms: 5000
+    api_key: ""          # Get from https://www.htx.com/apikey
+    api_secret: ""
+  hyperliquid:
+    enabled: true
+    recv_window_ms: 5000
+    api_key: ""
+    api_secret: ""
+    wallet_address: ""   # Your Ethereum-style address (0x...)
+    private_key: ""      # Your wallet private key — KEEP SECRET
+  bitget:
+    enabled: false
+    recv_window_ms: 5000
+    api_key: ""
+    api_secret: ""
+    passphrase: ""
+  active_exchange: "hyperliquid"  # one of: binance | htx | hyperliquid | bitget
+
+trading:
+  market_data_poll_interval_seconds: 10
+  portfolio_snapshot_interval_seconds: 60
+  order_sync_interval_seconds: 30
+  initial_cash_usdt: 20000.0  # Paper trading starting cash in USDT
+
+database:
+  db_path: "./data/horizon.db"
+
+# LLM credentials are NOT configured here. They are read from key.txt
+# (project root) or from environment variables ANTHROPIC_AUTH_TOKEN /
+# ANTHROPIC_BASE_URL / ANTHROPIC_DEFAULT_SONNET_MODEL.
+# See horizon/internal/llm/client.py for the loader.
+
+datasource:
+  cryptocompare_api_key: ""  # Optional, leave empty for free tier
+  cryptocompare_base_url: "https://min-api.cryptocompare.com"
+  cache_stale_seconds: 3600
+  cache_file: "./data/kline_cache.pkl"
+
+market_data:
+  symbols:
+    - "BTCUSDT"
+    - "ETHUSDT"
+    - "SOLUSDT"
+    - "BNBUSDT"

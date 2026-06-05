@@ -4,6 +4,13 @@ key.txt
 .env.local
 *.pem
 
+# Local config overrides — see config.example.yaml for the template.
+# config.yaml contains live exchange API keys per user setup; never commit.
+horizon/config.yaml
+horizon/config.local.yaml
+horizon/config.*.yaml
+!horizon/config.example.yaml
+
 # Runtime data + models
 data/
 *.db
